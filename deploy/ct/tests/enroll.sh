@@ -2,6 +2,11 @@
 # deploy.sh's token and host modes against stub PVE commands: the "host" and the
 # "container" are directories. Needs no Proxmox host and no root.
 set -euo pipefail
+# CI runners start jobs with SIGPIPE ignored, and bash cannot trap what it
+# inherits ignored. Only another program can put the default back.
+if [[ -z ${SIGPIPE_RESET:-} ]]; then
+	SIGPIPE_RESET=1 exec perl -e '$SIG{PIPE} = "DEFAULT"; exec @ARGV or die' bash "${BASH_SOURCE[0]}" "$@"
+fi
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 T=$(mktemp -d)
 trap 'rm -rf -- "$T" "${CONCORD_TMPFS:-$T}"' EXIT
