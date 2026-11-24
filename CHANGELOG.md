@@ -14,6 +14,10 @@ First release.
   off).
 - LXC template for a Proxmox host, with `deploy.sh` to create a container and to
   upgrade it, rolling back to the previous binaries if the new ones are unhealthy.
+- `deploy.sh` creates the read-only PVE user and token it needs, checks them, and
+  writes the configuration. `--enroll` with `--add-host` adds another host,
+  `--remove-host` and `--unenroll` take one out, and `--rotate-token` replaces a
+  token. Whatever a failed run created is removed again.
 - `concordctl`, the command-line client, shipped as a static binary.
 
 Limits:

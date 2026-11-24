@@ -65,7 +65,7 @@ fresh() {
 }
 deploy() {
 	rc=0
-	PATH="$T/bin:$PATH" CONCORD_HEALTH_DEADLINE=1 TMPDIR=$T \
+	PATH="$T/bin:$PATH" CONCORD_LOCK_DIR=$T/lock CONCORD_HEALTH_DEADLINE=1 TMPDIR=$T \
 		bash -c 'echo $$ >"$T/pid"; exec bash "$@"' - "$here/../deploy.sh" \
 		--upgrade 100 --template "$T/t.tar.xz" >"$T/out" 2>&1 || rc=$?
 }
@@ -100,6 +100,11 @@ for sig in HUP:129 INT:130 TERM:143; do
 		expect "${sig%:*} at '$at'" "${sig#*:}" old
 	done
 done
+
+mkdir -p "$T/lock"; exec 7>>"$T/lock/ct-100"; flock -n 7
+fresh; deploy; expect "another run holds the container" 1 old
+grep -q push "$T/log" && fail "pushed despite the lock"
+exec 7>&-
 
 template nostart; fresh; deploy; expect "the new does not start" 1 old
 template bad; fresh; deploy; expect "the new is not healthy" 1 old

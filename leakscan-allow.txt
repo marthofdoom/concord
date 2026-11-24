@@ -3,6 +3,8 @@
 # rule, a public resolver, or a made-up value in a test. Nothing from a real estate belongs here.
 crates/concord-pve/ASSUMPTIONS.md	pveapitoken
 crates/concord-pve/src/auth.rs	pveapitoken
+deploy/ct/deploy.sh	pveapitoken
+deploy/ct/tests/enroll.sh	pveapitoken
 crates/concord-pve/src/sanitize.rs	0a1b2c3d-1111-2222-3333-444455556666
 crates/concord-pve/src/sanitize.rs	100.64.1.2
 crates/concord-pve/src/sanitize.rs	10.20.0.5
