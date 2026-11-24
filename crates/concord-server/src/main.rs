@@ -1,17 +1,25 @@
 //! Concord's orchestrator. Runs in a container on a PVE host and serves the
 //! API and web UI that stand in for a cluster's.
 //!
-//! Scaffold: the listener and health surface are real; the subsystems behind
-//! them land per `docs/ARCHITECTURE.md`.
+//! Scaffold: the listener, health surface and read-only inventory are real;
+//! the other subsystems land per `docs/ARCHITECTURE.md`.
 
-use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::time::Duration;
 
-use axum::{routing::get, Json, Router};
-use serde_json::json;
+use anyhow::Context;
+use concord_config::{Config, Secrets};
+use concord_inventory::{InventoryConfig, Poller};
+use concord_server::{router, AppState};
 
-/// Default listen port. Deliberately *not* 8006 — Concord sits beside the PVE
-/// web UI on the same host rather than displacing it.
-const DEFAULT_PORT: u16 = 8010;
+const DEFAULT_CONFIG: &str = "/etc/concord/concord.toml";
+
+/// Per PVE request. A dark host must fail well inside the host deadline, so
+/// one powered-off machine delays the others' fresh data by seconds only.
+const PVE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Upper bound on one host's whole poll.
+const HOST_DEADLINE: Duration = Duration::from_secs(20);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -21,36 +29,63 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let port = std::env::var("CONCORD_PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(DEFAULT_PORT);
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let path = std::env::var_os("CONCORD_CONFIG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| DEFAULT_CONFIG.into());
+    let config =
+        Config::load(&path).with_context(|| format!("loading config {}", path.display()))?;
+    let secrets = Secrets::load(&config).context("loading token secrets")?;
+    let hosts = config.build_clients(&secrets, PVE_TIMEOUT)?;
+    drop(secrets);
 
-    let app = Router::new()
-        .route("/healthz", get(healthz))
-        .route("/api/v1/version", get(version));
+    let addr = config.listen;
+    if !addr.ip().is_loopback() {
+        // Allowed, because a reverse proxy in another container needs it, but
+        // the API has no authentication yet and the estate is a map of every
+        // guest.
+        tracing::warn!(%addr, "listening beyond loopback with no API authentication");
+    }
+
+    let (poller, inventory) = Poller::new(
+        hosts,
+        InventoryConfig {
+            interval: config.poll_interval(),
+            host_deadline: HOST_DEADLINE,
+            ..InventoryConfig::default()
+        },
+    );
+    let poller = tokio::spawn(poller.run());
+    let app = router(AppState { inventory });
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, version = concord_core::VERSION, "concord listening");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
-    Ok(())
+    let server = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
+    tokio::select! {
+        served = server => served.map_err(Into::into),
+        // The poller never returns, so this is a panic. Serving on would
+        // present a frozen estate as a live one.
+        ended = poller => {
+            ended.context("inventory poller died")?;
+            anyhow::bail!("inventory poller stopped")
+        }
+    }
 }
 
-/// Liveness only. It answers while the process is up; it makes no claim about
-/// whether the estate is healthy — that is `/api/v1/estate`, once it exists.
-async fn healthz() -> Json<serde_json::Value> {
-    Json(json!({ "status": "ok" }))
-}
-
-async fn version() -> Json<serde_json::Value> {
-    Json(json!({ "version": concord_core::VERSION }))
-}
-
+/// Ctrl-C interactively; SIGTERM is how systemd and container runtimes stop it.
 async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+    use tokio::signal::unix::{signal, SignalKind};
+    match signal(SignalKind::terminate()) {
+        Ok(mut term) => {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = term.recv() => {}
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "cannot listen for SIGTERM");
+            let _ = tokio::signal::ctrl_c().await;
+        }
+    }
     tracing::info!("shutting down");
 }

@@ -21,3 +21,7 @@ config.local.toml
 
 # Site settings; copy testbed/site.env.example
 /testbed/site.env
+
+# Token secrets belonging to a local concord.toml.
+/concord.toml
+*secrets.toml

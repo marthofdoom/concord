@@ -1,0 +1,34 @@
+[package]
+name = "concordctl"
+description = "Command-line client for the Concord API."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+name = "concordctl"
+path = "src/lib.rs"
+
+[[bin]]
+name = "concordctl"
+path = "src/main.rs"
+
+[dependencies]
+concord-core = { path = "../concord-core" }
+concord-inventory = { path = "../concord-inventory" }
+clap = { version = "4", features = ["derive", "env"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-no-provider", "json"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+concord-server = { path = "../concord-server" }
+concord-pve = { path = "../concord-pve", features = ["mock", "capture"] }
+axum = "0.8"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
