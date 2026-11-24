@@ -34,7 +34,12 @@ stage() {
 		# .apk = signature, control and data gzip streams back to back; GNU tar
 		# reads the first stream only, so skip entries to the data segment.
 		# Dot-files are the signature and control metadata, not payload.
-		tar -C "$rfs" -xzpf "$apk" --numeric-owner --exclude='.[A-Z]*' 2>/dev/null || true
+		tar -C "$rfs" -xzpf "$apk" --numeric-owner --exclude='.[A-Z]*' --warning=no-unknown-keyword
+	done
+	# A half-populated rootfs must never ship; nothing downstream boots it.
+	local f
+	for f in sbin/openrc sbin/supervise-daemon sbin/ifup etc/init.d/networking etc/init.d/syslog usr/lib/libcap.so.2 usr/lib/libeinfo.so.1; do
+		[[ -e $rfs/$f || -L $rfs/$f ]] || { echo "missing from rootfs: $f" >&2; exit 1; }
 	done
 
 	install -d -m 0755 "$rfs/usr/local/bin"
@@ -69,9 +74,12 @@ stage() {
 	ln -sf /etc/init.d/concord "$rfs/etc/runlevels/default/concord"
 
 	# No SSH server is installed; no setuid/setgid binary may ship.
-	if find "$rfs" -xdev \( -perm -4000 -o -perm -2000 \) | grep -q .; then
+	# Capture first: `find | grep -q` under pipefail passes when grep exits early.
+	local hits
+	hits=$(find "$rfs" -xdev \( -perm -4000 -o -perm -2000 \))
+	if [[ -n $hits ]]; then
 		echo "setuid/setgid files in rootfs:" >&2
-		find "$rfs" -xdev \( -perm -4000 -o -perm -2000 \) >&2
+		echo "$hits" >&2
 		exit 1
 	fi
 

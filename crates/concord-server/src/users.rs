@@ -9,10 +9,11 @@ use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::{Algorithm, Argon2, Params, Version};
-use concord_config::{lock_beside, read_private, write_private, ConfigError};
+use concord_config::{lock_beside, read_private, unsafe_for_root, write_private, ConfigError};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
@@ -240,6 +241,18 @@ impl Users {
             path: path.to_path_buf(),
             source,
         };
+        if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(dir)
+                .map_err(write_err)?;
+        }
+        // Before the read, whose own refusal would be less to the point.
+        if let Some(why) = unsafe_for_root(path) {
+            return Err(refused(why));
+        }
         let _lock = lock_beside(path).map_err(write_err)?;
         let mut users = Users::load(path)?;
         let out = change(&mut users)?;
@@ -259,6 +272,10 @@ impl Users {
         }
         let password_hash = hash_password(password)?;
         Users::edit(path, |f| {
+            // The audit log names callers; a name must be one caller.
+            if f.tokens.iter().any(|o| o.name == name) {
+                return Err(refused(format!("{name} is the name of a token already")));
+            }
             if f.users.iter().any(|u| u.name == name) {
                 return Err(refused(format!("user {name} exists; remove it first")));
             }
@@ -288,6 +305,10 @@ impl Users {
         let secret = Zeroizing::new(format!("{TOKEN_PREFIX}{}", hex(&random::<32>()?[..])));
         let sha256 = hex(&digest(&secret));
         Users::edit(path, |f| {
+            // The audit log names callers; a name must be one caller.
+            if f.users.iter().any(|o| o.name == name) {
+                return Err(refused(format!("{name} is the name of a user already")));
+            }
             if f.tokens.iter().any(|t| t.name == name) {
                 return Err(refused(format!("token {name} exists; remove it first")));
             }
@@ -323,8 +344,20 @@ struct Stamp(u64, u64, u64, i64, i64);
 /// The users file, followed as it changes.
 pub(crate) struct Store {
     path: PathBuf,
-    seen: Mutex<Option<(Option<Stamp>, Arc<Loaded>)>>,
+    seen: Mutex<Seen>,
 }
+
+#[derive(Default)]
+struct Seen {
+    cached: Option<(Stamp, Arc<Loaded>)>,
+    logged: Option<Instant>,
+}
+
+const LOG_EVERY: Duration = Duration::from_secs(30);
+
+/// The users file cannot be read or is not valid; the log says why.
+#[derive(Debug)]
+pub(crate) struct Unusable;
 
 #[derive(Default)]
 pub(crate) struct Loaded {
@@ -354,39 +387,100 @@ impl Store {
     pub(crate) fn new(path: PathBuf) -> Self {
         Store {
             path,
-            seen: Mutex::new(None),
+            seen: Mutex::default(),
         }
     }
 
-    pub(crate) fn current(&self) -> Arc<Loaded> {
+    /// `Err` is a file that cannot be used now. Nothing from before is served
+    /// in its place, and nothing is remembered either: the fault may be the
+    /// machine's (no descriptors, an I/O error) and leave the file as it was.
+    pub(crate) fn current(&self) -> Result<Arc<Loaded>, Unusable> {
         let mut seen = self.seen.lock().unwrap_or_else(PoisonError::into_inner);
         // Stamped before it is read: a change in between is seen next time.
-        let stamp = match std::fs::metadata(&self.path) {
-            Ok(m) => Some(Stamp(m.dev(), m.ino(), m.size(), m.ctime(), m.ctime_nsec())),
-            Err(_) => None,
-        };
-        if let Some((s, l)) = &*seen {
-            if *s == stamp {
-                return l.clone();
+        let stamp = std::fs::metadata(&self.path)
+            .ok()
+            .map(|m| Stamp(m.dev(), m.ino(), m.size(), m.ctime(), m.ctime_nsec()));
+        if let (Some(now), Some((then, l))) = (stamp, &seen.cached) {
+            if now == *then {
+                return Ok(l.clone());
             }
         }
-        let users = Users::load(&self.path).unwrap_or_else(|e| {
-            tracing::error!(error = %e, "cannot use the users file; refusing everyone");
-            Users::default()
-        });
-        tracing::info!(
-            users = users.users.len(),
-            tokens = users.tokens.len(),
-            "users file loaded"
-        );
-        if users.is_empty() {
+        seen.cached = None;
+        let loaded = Users::load(&self.path);
+        // Uncached results are reloaded on every request, so are not logged on
+        // every one.
+        let quiet = seen.logged.is_some_and(|t| t.elapsed() < LOG_EVERY);
+        let users = match loaded {
+            Ok(u) => u,
+            Err(e) => {
+                if !quiet {
+                    seen.logged = Some(Instant::now());
+                    tracing::error!(error = %e, "cannot use the users file; refusing everyone");
+                }
+                return Err(Unusable);
+            }
+        };
+        if stamp.is_some() {
+            tracing::info!(
+                users = users.users.len(),
+                tokens = users.tokens.len(),
+                "users file loaded"
+            );
+        }
+        if users.is_empty() && (stamp.is_some() || !quiet) {
+            seen.logged = Some(Instant::now());
             tracing::warn!(
                 "no API users; add one with `concord user add NAME --role admin`. \
                  Until then every API request is refused"
             );
         }
         let loaded = Arc::new(Loaded::new(users));
-        *seen = Some((stamp, loaded.clone()));
-        loaded
+        // Without a stamp there is nothing to tell a later change by.
+        seen.cached = stamp.map(|s| (s, loaded.clone()));
+        Ok(loaded)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The fault clears without the file changing; whoever was refused during
+    /// it must not stay refused.
+    #[test]
+    fn a_transient_fault_is_not_remembered() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("users.toml");
+        let secret = Users::add_token(&f, "t", Role::Admin).unwrap();
+        let store = Store::new(f.clone());
+        assert!(store.current().unwrap().token(&secret).is_some());
+        // A failed load, then exactly the same file again: same stamp.
+        let aside = d.path().join("aside");
+        std::fs::rename(&f, &aside).unwrap();
+        std::fs::create_dir(&f).unwrap();
+        assert!(store.current().is_err());
+        assert!(lock_seen(&store).cached.is_none());
+        std::fs::remove_dir(&f).unwrap();
+        // Absent is empty, and is not cached.
+        assert!(store.current().unwrap().users.is_empty());
+        assert!(lock_seen(&store).cached.is_none());
+        std::fs::rename(&aside, &f).unwrap();
+        assert!(store.current().unwrap().token(&secret).is_some());
+    }
+
+    fn lock_seen(s: &Store) -> std::sync::MutexGuard<'_, Seen> {
+        s.seen.lock().unwrap()
+    }
+
+    #[test]
+    fn a_name_is_one_user_or_one_token() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("sub/users.toml");
+        Users::add_token(&f, "bot", Role::Admin).unwrap();
+        assert!(Users::add_user(&f, "bot", Role::Admin, "correct horse battery").is_err());
+        Users::add_user(&f, "user1@pve", Role::Admin, "correct horse battery").unwrap();
+        assert!(Users::add_token(&f, "user1@pve", Role::Admin).is_err());
+        let mode = std::fs::metadata(d.path().join("sub")).unwrap().mode();
+        assert_eq!(mode & 0o777, 0o700, "created with the file");
     }
 }

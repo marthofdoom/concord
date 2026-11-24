@@ -156,8 +156,23 @@ export function buildQuery(query) {
 
 // 'live' | 'old' (controller answers but the cycle is old)
 // | 'unreachable' (the last fetch failed). Callers never show a frozen view as live.
-export function freshness({ fetchOk, takenAt, nowSecs }) {
+export function freshness({ fetchOk, takenAt, nowSecs, waiting }) {
   if (!fetchOk) return "unreachable";
+  // 503 after data was shown: that data predates a restart.
+  if (waiting) return "old";
   if (typeof takenAt === "number" && nowSecs - takenAt > OLD_AFTER_SECS) return "old";
   return "live";
+}
+
+// Leave for the login page only when the server confirmed the session is gone
+// (204) or never existed (401); anything else means the cookie is still live.
+export function signOutOutcome(status) {
+  return status === 204 || status === 401 ? "left" : "failed";
+}
+
+// Detail fetch result. A failure carries no data, so the view cannot keep
+// showing an earlier copy as current.
+export function guestResult(status, body) {
+  if (status >= 200 && status < 300 && body) return { status, data: body, error: null };
+  return { status, data: null, error: (body && body.error) || (status ? "HTTP " + status : "no answer from the controller") };
 }

@@ -155,6 +155,7 @@ async fn every_api_path_is_denied_without_identity() {
 async fn session_contract_over_tls() {
     let s = start(true, Limits::default()).await;
     let (set, cookie) = s.login("user2@pve").await;
+    assert!(set.starts_with("__Host-concord_session="), "{set}");
     for attr in ["HttpOnly", "SameSite=Strict", "Secure", "Path=/"] {
         assert!(set.split("; ").any(|a| a == attr), "{attr}");
     }
@@ -293,12 +294,15 @@ async fn changes_to_the_file_reach_a_running_server() {
     let (_, cookie) = s.login("user1@pve").await;
     let good = std::fs::read_to_string(&s.users).expect("read");
     concord_config::write_private(&s.users, "not toml [").expect("write");
-    assert_eq!(s.status(Method::GET, v, &[("cookie", &cookie)]).await, 401);
+    assert_eq!(s.status(Method::GET, v, &[("cookie", &cookie)]).await, 503);
+    assert_eq!(s.try_login("user1@pve", PASS).await.status(), 503);
+    assert_eq!(s.status(Method::GET, v, &[]).await, 401);
+    // The session was only suspended.
     concord_config::write_private(&s.users, &good).expect("write");
-    let (_, cookie) = s.login("user1@pve").await;
+    assert_eq!(s.status(Method::GET, v, &[("cookie", &cookie)]).await, 200);
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&s.users, std::fs::Permissions::from_mode(0o640)).expect("chmod");
-    assert_eq!(s.status(Method::GET, v, &[("cookie", &cookie)]).await, 401);
+    assert_eq!(s.status(Method::GET, v, &[("cookie", &cookie)]).await, 503);
     std::fs::remove_file(&s.users).expect("rm");
     assert_eq!(s.status(Method::GET, v, &[("cookie", &cookie)]).await, 401);
     assert_eq!(s.status(Method::GET, "/healthz", &[]).await, 200);
@@ -363,6 +367,7 @@ async fn closes(mut c: TcpStream) -> bool {
 async fn silent_clients_are_cut_off_and_connections_are_limited() {
     let limits = Limits {
         connections: 2,
+        per_source: 32,
         handshake: Duration::from_millis(400),
         header: Duration::from_millis(400),
         lifetime: Duration::from_secs(60),
@@ -517,4 +522,23 @@ fn managing_users_and_tokens() {
         }
     });
     assert_eq!(Users::load(&f).expect("load").tokens.len(), 8);
+}
+
+#[tokio::test]
+async fn one_address_cannot_hold_every_connection() {
+    let limits = Limits {
+        per_source: 2,
+        ..Limits::default()
+    };
+    let s = start(false, limits).await;
+    let a = TcpStream::connect(s.addr).await.expect("a");
+    let b = TcpStream::connect(s.addr).await.expect("b");
+    assert!(closes(TcpStream::connect(s.addr).await.expect("c")).await);
+    drop((a, b));
+    // Their allowance comes back once the server has seen them go.
+    let t = std::time::Instant::now();
+    while s.req(Method::GET, "/healthz").send().await.is_err() {
+        assert!(t.elapsed() < Duration::from_secs(3));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }

@@ -47,7 +47,8 @@ stale; a guest disappears only when its host answers and no longer lists it.
 
    The role must cover `/`: PVE leaves guests the token may not see out of its
    lists without an error, so Concord would take them for deleted.
-2. Copy `concord.example.toml` to `concord.toml` and fill it in; put the token
+2. Copy `concord.example.toml` to `concord.toml` and fill it in; not running as
+   root, set `state_dir` to a directory you can create (say `"state"`); put the token
    secrets in the secrets file (mode 0600).
 3. Add a user for yourself and a token for `concordctl`. There are no default
    credentials: until one exists, the API refuses everyone.
@@ -60,8 +61,9 @@ stale; a guest disappears only when its host answers and no longer lists it.
 
    Roles are `admin` and `readonly`. `concord user list`, `user remove` and
    `token remove` manage them; a running server honours a change on its next
-   request, and removing a user ends that user's sessions. As root, create
-   the users in a directory the service account owns: the file takes its owner.
+   request, and removing a user ends that user's sessions. Run these as
+   the account Concord runs as: root is refused where that account controls the
+   directory (`su -s /bin/sh concord -c 'concord user ...'`).
 4. Run it, and query it:
 
    ```sh

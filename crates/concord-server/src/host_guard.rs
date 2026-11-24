@@ -1,9 +1,10 @@
 //! Refuses requests addressed to a name that is not this machine's loopback.
 //!
 //! Plain HTTP and unauthenticated routes are reachable on loopback because only
-//! this machine is there, and DNS rebinding defeats that: a web page open on this machine can point its own name at 127.0.0.1 and
-//! read the replies as same-origin. The browser still sends that name as Host,
-//! which is what gives it away.
+//! this machine is there, and DNS rebinding defeats that: a web page open on
+//! this machine can point its own name at 127.0.0.1 and read the replies as
+//! same-origin. The browser still sends that name as Host, which is what gives
+//! it away.
 
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 

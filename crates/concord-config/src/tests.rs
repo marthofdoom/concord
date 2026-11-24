@@ -395,3 +395,24 @@ fn access_settings_default_and_resolve_beside_the_config() {
     assert_eq!(cfg.tls_key, Some(dir.path().join("k")));
     assert_eq!(cfg.users_path(), dir.path().join("s/users.toml"));
 }
+
+#[cfg(unix)]
+#[test]
+fn root_does_not_write_where_others_decide_what_a_path_means() {
+    use crate::private::unsafe_dir;
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    // As root in CI the directory is root's, and shared is what makes it unsafe.
+    let d = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o1777)).unwrap();
+    let why = unsafe_dir(d.path()).unwrap();
+    assert!(why.contains("su -s"), "{why}");
+    // Reached from below, and through a link, it is the same directory.
+    std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
+    std::fs::create_dir(d.path().join("sub")).unwrap();
+    assert!(unsafe_dir(&d.path().join("sub")).is_some());
+    let d2 = tempfile::tempdir().unwrap();
+    symlink(d.path(), d2.path().join("link")).unwrap();
+    assert!(unsafe_dir(&d2.path().join("link")).is_some());
+    assert!(unsafe_dir(&d.path().join("absent")).is_some());
+    assert_eq!(unsafe_dir(Path::new("/")), None);
+}

@@ -92,8 +92,9 @@ struct RawHost {
 }
 
 impl Config {
-    /// Reads and validates `path`. Relative paths are taken relative to the configuration file, so it does not depend on the working
-    /// directory a service happens to start in.
+    /// Reads and validates `path`. Relative paths are taken relative to the
+    /// configuration file, so they do not depend on the working directory a
+    /// service happens to start in.
     pub fn load(path: &Path) -> Result<Config, ConfigError> {
         let text = std::fs::read_to_string(path).map_err(|source| ConfigError::Read {
             path: path.to_path_buf(),

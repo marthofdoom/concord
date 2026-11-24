@@ -1,9 +1,10 @@
 //! The listener. Hand-rolled over `axum::serve` for TLS and for limits on what
 //! a client that has not authenticated can hold open.
 
+use std::collections::HashMap;
 use std::io;
-use std::net::SocketAddr;
-use std::sync::Arc;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use axum::extract::Request;
@@ -18,12 +19,15 @@ use tokio::task::JoinSet;
 use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt;
 
-use crate::auth::Peer;
+use crate::auth::{bucket, Peer};
 use crate::tls::Tls;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     pub connections: usize,
+    /// From one IPv4 address or IPv6 /64, so that no one client can hold them
+    /// all. Beyond it a connection is closed as it is accepted.
+    pub per_source: usize,
     /// For the TLS handshake, and for each request's headers.
     pub handshake: Duration,
     pub header: Duration,
@@ -38,6 +42,7 @@ impl Default for Limits {
     fn default() -> Self {
         Limits {
             connections: 256,
+            per_source: 32,
             handshake: Duration::from_secs(10),
             header: Duration::from_secs(10),
             lifetime: Duration::from_secs(300),
@@ -63,6 +68,7 @@ pub async fn serve(
     }
     let acceptor = tls.map(|t| TlsAcceptor::from(t.config.clone()));
     let slots = Arc::new(Semaphore::new(limits.connections));
+    let sources: Sources = Arc::default();
     let mut open = JoinSet::new();
     loop {
         let accepted = tokio::select! {
@@ -82,9 +88,13 @@ pub async fn serve(
                 continue;
             }
         };
+        let Some(held) = Held::take(&sources, peer, limits.per_source) else {
+            tracing::debug!(%peer, "too many connections from this address");
+            continue;
+        };
         let (app, acceptor, mut stop) = (app.clone(), acceptor.clone(), stop.clone());
         open.spawn(async move {
-            let _slot = slot;
+            let _held = (slot, held);
             let Some(acceptor) = acceptor else {
                 return connection(stream, peer, app, limits, stop).await;
             };
@@ -110,6 +120,37 @@ pub async fn serve(
         );
     }
     Ok(())
+}
+
+type Sources = Arc<Mutex<HashMap<IpAddr, usize>>>;
+
+/// One connection's share of its source's allowance, returned on drop. Only
+/// sources with one open are in the map, which bounds it.
+struct Held(Sources, IpAddr);
+
+impl Held {
+    fn take(sources: &Sources, peer: SocketAddr, limit: usize) -> Option<Held> {
+        let ip = bucket(peer.ip());
+        let mut map = sources.lock().unwrap_or_else(PoisonError::into_inner);
+        let n = map.get(&ip).copied().unwrap_or(0);
+        if n >= limit {
+            return None;
+        }
+        map.insert(ip, n + 1);
+        Some(Held(sources.clone(), ip))
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        let mut map = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        match map.get_mut(&self.1) {
+            Some(n) if *n > 1 => *n -= 1,
+            _ => {
+                map.remove(&self.1);
+            }
+        }
+    }
 }
 
 async fn connection<S>(

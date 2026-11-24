@@ -73,6 +73,9 @@ jobs:
         env:
           CC_x86_64_unknown_linux_musl: musl-gcc
 
+      - name: Upgrade and rollback against a stub container
+        run: deploy/ct/tests/upgrade.sh
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: concord-ct-template

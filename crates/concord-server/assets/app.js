@@ -2,7 +2,7 @@
 // reaches the page through textContent / createElement, never as markup.
 import {
   attention, buildQuery, countBy, distinct, filterGuests, fmtAgo, fmtBytes, fmtDuration,
-  freshness, guestBadge, guestHref, guestRows, hostBadge, parseHash, pct, sortGuests,
+  freshness, guestBadge, guestResult, signOutOutcome, guestHref, guestRows, hostBadge, parseHash, pct, sortGuests,
 } from "/ui/logic.js";
 
 const REFRESH_MS = 5000;
@@ -61,6 +61,10 @@ async function json(r) { try { return await r.json(); } catch { return null; } }
 function signedOut() {
   S.user = null;
   S.view = null;
+  // The next login may be another user or a restarted controller: the old
+  // picture must not be repainted as if it were current.
+  S.estate = null; S.guest = null; S.fetchedAt = null;
+  S.waiting = false; S.fetchOk = true; S.error = null;
   renderShell();
 }
 
@@ -71,7 +75,7 @@ async function refresh() {
   inflight = true;
   try {
     const r = await api("/api/v1/estate");
-    if (r.status === 503) { S.waiting = true; S.fetchOk = true; S.error = null; }
+    if (r.status === 503) { S.waiting = true; S.estate = null; S.fetchOk = true; S.error = null; }
     else if (r.ok) {
       const body = await json(r);
       if (body && Array.isArray(body.hosts)) { S.estate = body; S.fetchedAt = now(); S.waiting = false; S.fetchOk = true; S.error = null; }
@@ -94,12 +98,12 @@ async function refreshGuest() {
   const key = path[1] + "/" + path[2];
   try {
     const r = await api(`/api/v1/guests/${encodeURIComponent(path[1])}/${encodeURIComponent(path[2])}`);
-    const body = await json(r);
-    S.guest = { key, status: r.status, data: r.ok ? body : null, error: r.ok ? null : (body && body.error) || "HTTP " + r.status };
+    S.guest = { key, ...guestResult(r.status, await json(r)) };
   } catch (e) {
     if (e instanceof Unauthorized) throw e;
-    // Keep the previous detail for this guest; the banner says it is old.
-    if (!S.guest || S.guest.key !== key) S.guest = { key, status: 0, data: null, error: "no answer from the controller" };
+    // Drop the old detail: the view falls back to the fresh estate copy and
+    // says the detail could not be loaded, rather than showing it as current.
+    S.guest = { key, ...guestResult(0, null) };
   }
 }
 
@@ -165,16 +169,22 @@ async function loadSession() {
 }
 
 async function signOut() {
-  try { await api("/api/v1/session", { method: "DELETE" }); } catch { /* the cookie may already be gone */ }
-  S.user = null; S.estate = null; S.guest = null;
-  renderShell();
+  let status = 0;
+  try { status = (await api("/api/v1/session", { method: "DELETE", allow401: true })).status; } catch { /* reported below */ }
+  if (signOutOutcome(status) === "failed") {
+    // The session cookie is still live; showing the login page would lie.
+    if (els.banner) replace(els.banner, h("div", { class: "banner bad" }, h("strong", { text: "\u2715 Sign-out failed. " }),
+      "You are still signed in" + (status ? " (HTTP " + status + ")" : " (no answer from the controller)") + ". Try again."));
+    return;
+  }
+  signedOut();
 }
 
 // ---- status strip, banner, staleness ----
 function paint() {
   if (!S.user || !els.main) return;
   const t = now();
-  const fr = S.estate ? freshness({ fetchOk: S.fetchOk, takenAt: S.estate.taken_at, nowSecs: t }) : (S.fetchOk ? "live" : "unreachable");
+  const fr = S.estate ? freshness({ fetchOk: S.fetchOk, takenAt: S.estate.taken_at, nowSecs: t, waiting: S.waiting }) : (S.fetchOk ? "live" : "unreachable");
   const notes = [];
   if (fr === "unreachable") {
     notes.push(h("div", { class: "banner bad" }, h("strong", { text: "✕ Controller unreachable. " }),

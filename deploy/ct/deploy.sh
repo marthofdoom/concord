@@ -17,7 +17,7 @@ HEALTH_DEADLINE=${CONCORD_HEALTH_DEADLINE:-90}
 
 vmid= storage= bridge= ip= gateway= config= secrets= template= hostname= upgrade=
 rootfs_gb=1 dry=0
-created=0 workdir=
+created=0 workdir= stage= snap=
 
 die() { echo "error: $*" >&2; exit 1; }
 say() { echo "== $*"; }
@@ -48,12 +48,40 @@ while (($#)); do
 done
 
 ((dry)) || [[ $(id -u) -eq 0 ]] || die "run as root on a Proxmox host"
-for t in pct pvesm pvesh tar curl awk; do command -v "$t" >/dev/null || die "missing command: $t"; done
+for t in pct pvesm pvesh tar curl awk sha256sum; do command -v "$t" >/dev/null || die "missing command: $t"; done
 [[ -n $template && -f $template ]] || die "--template FILE (built by build-template.sh) is required"
+
+# Undoes an interrupted swap. `.old` in the container are the only copies of
+# the previous binaries; each is renamed back, so this may be repeated. The
+# service is started whatever else failed.
+restore_old() {
+	pct exec "$vmid" -- rc-service concord stop >/dev/null 2>&1
+	pct exec "$vmid" -- sh -c 'cd /usr/local/bin && rm -f concord.new concordctl.new &&
+		for f in concord concordctl; do [ ! -e $f.old ] || mv -f $f.old $f || exit 1; done'
+	local rc=$?
+	pct exec "$vmid" -- rc-service concord start || rc=1
+	return "$rc"
+}
 
 workdir=$(mktemp -d)
 cleanup() {
 	local rc=$?
+	# Nothing may stop the rollback half way: not a second signal, nor a write
+	# to a terminal that has gone. Inherited by pct, too.
+	trap '' HUP INT TERM PIPE
+	set +e
+	case $stage in
+	staged) # the installed binaries were not touched
+		pct exec "$vmid" -- sh -c 'cd /usr/local/bin && rm -f concord.new concordctl.new *.old.tmp concord.old concordctl.old' >/dev/null 2>&1 ;;
+	swapping)
+		say "upgrade failed; restoring the previous binaries"
+		if restore_old && wait_healthy "$vmid" "$port" >/dev/null; then
+			echo "the previous version is running again" >&2
+		else
+			echo "the previous version is NOT healthy either; any *.old in /usr/local/bin of the container is it; snapshot ${snap:-(none)} may help" >&2
+		fi
+		;;
+	esac
 	if ((rc != 0 && created)); then
 		say "failed; destroying container $vmid that this run created"
 		# created is only set once pct create succeeded in this run.
@@ -68,19 +96,45 @@ cleanup() {
 	exit "$rc"
 }
 trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 141' PIPE
+trap 'exit 143' TERM
 
+# The port of a config's `listen`, which has to be reachable from outside the
+# container. Refused here rather than found out by the health check timing out.
 listen_port() { # config file -> port
-	local p
-	p=$(sed -n 's/^[[:space:]]*listen[[:space:]]*=[[:space:]]*"[^"]*:\([0-9][0-9]*\)".*/\1/p' "$1" | head -n1)
-	echo "${p:-8010}"
+	local v host port
+	v=$(sed -n -e 's/^[[:space:]]*listen[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+		-e "s/^[[:space:]]*listen[[:space:]]*=[[:space:]]*'\\([^']*\\)'.*/\\1/p" "$1" | head -n1)
+	[[ -n $v ]] || die "the config has no listen = \"ADDRESS:PORT\" line, so Concord would listen on loopback only"
+	host=${v%:*} port=${v##*:}
+	[[ $v == *:* && $port =~ ^[0-9]{1,5}$ ]] && ((10#$port >= 1 && 10#$port <= 65535)) || die "cannot read a port from listen in the config"
+	host=${host#[} host=${host%]}
+	if [[ $host == localhost || $host =~ ^(.*:)?127\.[0-9.]+$ || $host =~ ^[0:]*:0*1$ ]]; then
+		die "the config listens on loopback; use 0.0.0.0 or the container's own address"
+	fi
+	echo "$((10#$port))"
+}
+
+# The sum detects a damaged or mixed-up file, not a malicious one.
+verify_template() {
+	[[ -f $template.sha256 ]] || return 0
+	local want got
+	read -r want _ <"$template.sha256" || true
+	got=$(sha256sum <"$template")
+	[[ $want == "${got%% *}" ]] || die "$template does not match $template.sha256"
 }
 
 ct_ip() { # vmid -> address of eth0
 	local cfg addr
 	cfg=$(pct config "$1" | sed -n 's/^net0:.*[,:]ip=\([^,]*\).*/\1/p')
-	if [[ $cfg == */* ]]; then echo "${cfg%/*}"; return; fi
+	# `return 0`, not `return`: under the EXIT trap a bare return yields the
+	# status from before the trap, which failed every rollback health check.
+	if [[ $cfg == */* ]]; then echo "${cfg%/*}"; return 0; fi
 	addr=$(pct exec "$1" -- ip -4 -o addr show dev eth0 2>/dev/null | awk '{sub("/.*","",$4); print $4; exit}')
-	[[ -n $addr ]] || return 1
+	# Container output, about to be part of a URL.
+	[[ $addr =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
 	echo "$addr"
 }
 
@@ -116,56 +170,64 @@ verify_concord_ct() { # vmid
 	head -n1 "$workdir/marker" | grep -qx 'concord-ct 1' || die "container $1 marker is not recognised"
 }
 
+verify_template
+
 # ---------------------------------------------------------------- upgrade
 if [[ -n $upgrade ]]; then
 	vmid=$upgrade
 	[[ $vmid =~ ^[0-9]+$ ]] || die "bad VMID: $vmid"
 	verify_concord_ct "$vmid"
-	mkdir -p "$workdir/new" "$workdir/old"
+	mkdir -p "$workdir/new"
 	tar -xJf "$template" -C "$workdir/new" ./usr/local/bin/concord ./usr/local/bin/concordctl ||
 		die "template does not hold the binaries"
 	new=$workdir/new/usr/local/bin
-	say "saving current binaries"
-	pct pull "$vmid" /usr/local/bin/concord "$workdir/old/concord"
-	pct pull "$vmid" /usr/local/bin/concordctl "$workdir/old/concordctl"
-	pct pull "$vmid" /etc/concord/concord.toml "$workdir/concord.toml" 2>/dev/null || : >"$workdir/concord.toml"
+	for f in concord concordctl; do
+		# pct push would follow a link and read its target as this host's root.
+		[[ -f $new/$f && ! -L $new/$f && $(stat -c %h "$new/$f") == 1 ]] || die "template: $f is not a plain file"
+	done
+	pct pull "$vmid" /etc/concord/concord.toml "$workdir/concord.toml" >/dev/null || die "cannot read the container's config"
 	port=$(listen_port "$workdir/concord.toml")
 
-	# `pct push` only works on a running container, so the swap happens inside
-	# it: push beside the old binary, then rename over it with the service down.
-	swap_bins() { # dir
-		run pct push "$vmid" "$1/concord" /usr/local/bin/concord.new --perms 0755 --user 0 --group 0 &&
-			run pct push "$vmid" "$1/concordctl" /usr/local/bin/concordctl.new --perms 0755 --user 0 --group 0 &&
-			run pct exec "$vmid" -- rc-service concord stop &&
-			run pct exec "$vmid" -- mv /usr/local/bin/concord.new /usr/local/bin/concord &&
-			run pct exec "$vmid" -- mv /usr/local/bin/concordctl.new /usr/local/bin/concordctl &&
-			run pct exec "$vmid" -- rc-service concord start
-	}
+	if pct exec "$vmid" -- sh -c 'cd /usr/local/bin && { [ -e concord.old ] || [ -e concordctl.old ]; }'; then
+		say "an earlier upgrade was cut off; restoring the binaries it replaced"
+		if ((dry)); then echo "DRY-RUN: restore *.old in /usr/local/bin"; else
+			restore_old || die "could not restore them"
+		fi
+	fi
 
 	snap=pre-upgrade-$(date -u +%Y%m%d%H%M%S)
 	say "snapshot $snap (skipped with a warning if the storage cannot)"
 	run pct snapshot "$vmid" "$snap" || { snap=; echo "warning: no snapshot; the old binaries are kept for rollback" >&2; }
+
+	# `pct push` only works on a running container, so the swap happens inside
+	# it. Everything that can run out of space comes first, while the old
+	# version is still running untouched.
+	say "pushing the new binaries"
+	((dry)) || stage=staged
+	for f in concord concordctl; do
+		run pct push "$vmid" "$new/$f" "/usr/local/bin/$f.new" --perms 0755 --user 0 --group 0 ||
+			die "push failed; the running version was not touched"
+	done
+	# Both copies exist in full before either is named .old.
+	run pct exec "$vmid" -- sh -c 'cd /usr/local/bin &&
+		cp -p concord concord.old.tmp && cp -p concordctl concordctl.old.tmp && sync &&
+		mv concord.old.tmp concord.old && mv concordctl.old.tmp concordctl.old' ||
+		die "could not keep the old binaries; the running version was not touched"
+
 	say "replacing binaries"
-	# Not under set -e: a swap that fails half way must reach the rollback.
-	swapped=1
-	swap_bins "$new" || swapped=0
+	# From here until it is healthy, any exit rolls back (see cleanup).
+	((dry)) || stage=swapping
+	run pct exec "$vmid" -- rc-service concord stop || die "could not stop the service"
+	run pct exec "$vmid" -- mv /usr/local/bin/concord.new /usr/local/bin/concord || die "swap failed"
+	run pct exec "$vmid" -- mv /usr/local/bin/concordctl.new /usr/local/bin/concordctl || die "swap failed"
+	run pct exec "$vmid" -- rc-service concord start || die "the new version did not start"
 	if ((dry)); then echo "DRY-RUN: wait up to ${HEALTH_DEADLINE}s for /healthz on port $port; roll back on failure"; exit 0; fi
-	if ((swapped)) && addr=$(wait_healthy "$vmid" "$port"); then
-		say "upgraded; healthy at $addr:$port"
-		[[ -z $snap ]] || echo "snapshot $snap can be removed with: pct delsnapshot $vmid $snap"
-		exit 0
-	fi
-	say "upgrade failed; restoring the previous binaries"
-	# The service may already be stopped, or crash-looping.
-	pct exec "$vmid" -- rc-service concord stop >/dev/null 2>&1 || true
-	if pct push "$vmid" "$workdir/old/concord" /usr/local/bin/concord.new --perms 0755 --user 0 --group 0 &&
-		pct push "$vmid" "$workdir/old/concordctl" /usr/local/bin/concordctl.new --perms 0755 --user 0 --group 0 &&
-		pct exec "$vmid" -- mv /usr/local/bin/concord.new /usr/local/bin/concord &&
-		pct exec "$vmid" -- mv /usr/local/bin/concordctl.new /usr/local/bin/concordctl &&
-		pct exec "$vmid" -- rc-service concord start && wait_healthy "$vmid" "$port" >/dev/null; then
-		die "upgrade failed; the previous version is running again"
-	fi
-	die "upgrade failed and the previous version is NOT healthy either; snapshot ${snap:-(none)} may help"
+	addr=$(wait_healthy "$vmid" "$port") || die "the new version is not healthy after ${HEALTH_DEADLINE}s"
+	# Good: cleanup now only removes what is left over.
+	stage=staged
+	say "upgraded; healthy at $addr:$port"
+	[[ -z $snap ]] || echo "snapshot $snap can be removed with: pct delsnapshot $vmid $snap"
+	exit 0
 fi
 
 # ----------------------------------------------------------------- create
@@ -223,6 +285,10 @@ created=0
 cat <<NEXT
 
 Concord is up: https://$addr:$port/  (self-signed certificate)
+
+Before typing a password into it, check that the certificate your browser shows
+has the fingerprint the server logged:
+  pct exec $vmid -- logread | grep fingerprint
 
 Next, create the first admin (the password is read from stdin):
   pct exec $vmid -- su -s /bin/sh concord -c '/usr/local/bin/concord user add NAME --role admin'

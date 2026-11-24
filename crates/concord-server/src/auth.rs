@@ -23,10 +23,15 @@ use zeroize::Zeroizing;
 
 use crate::error;
 use crate::users::{
-    digest, hash_password, hex, random, verify_password, Role, Store, UsersError, MAX_PASSWORD,
+    digest, hash_password, hex, random, verify_password, Role, Store, Unusable, UsersError,
+    MAX_PASSWORD,
 };
 
+/// Over TLS the name carries `__Host-`, which makes the browser refuse one set
+/// by another host or over plain http. Cookies ignore the port, so two
+/// instances forwarded to one loopback name share this and log each other out.
 pub const SESSION_COOKIE: &str = "concord_session";
+pub const SESSION_COOKIE_TLS: &str = "__Host-concord_session";
 pub const SESSION_PATH: &str = "/api/v1/session";
 /// A cross-site page cannot set this without a preflight nothing here answers.
 pub const CSRF_HEADER: &str = "x-concord-request";
@@ -127,7 +132,7 @@ impl Auth {
             hashes: Arc::new(Semaphore::new(HASHES_AT_ONCE)),
         };
         // Loaded now so that its warnings are in the start-up log.
-        auth.store.current();
+        let _ = auth.store.current();
         Ok(Arc::new(auth))
     }
 
@@ -168,11 +173,15 @@ impl Auth {
         Ok(id)
     }
 
-    fn session(&self, id: &str, now: Instant) -> Option<Identity> {
-        let loaded = self.store.current();
+    fn session(&self, id: &str, now: Instant) -> Result<Option<Identity>, Unusable> {
+        // A session outlives a file that cannot be read just now; it is not
+        // honoured meanwhile.
+        let loaded = self.store.current()?;
         let key = digest(id);
         let mut map = lock(&self.sessions);
-        let s = map.get_mut(&key)?;
+        let Some(s) = map.get_mut(&key) else {
+            return Ok(None);
+        };
         // The role is the file's, not the login's: a demotion is immediate.
         let role = loaded
             .users
@@ -182,15 +191,15 @@ impl Auth {
         match role {
             Some(role) if self.live(s, now) => {
                 s.used = now;
-                Some(Identity {
+                Ok(Some(Identity {
                     user: s.user.clone(),
                     role,
                     via: Via::Session,
-                })
+                }))
             }
             _ => {
                 map.remove(&key);
-                None
+                Ok(None)
             }
         }
     }
@@ -236,26 +245,55 @@ impl Auth {
         }
     }
 
-    fn identify(&self, headers: &HeaderMap) -> Option<Identity> {
+    fn identify(&self, headers: &HeaderMap) -> Result<Option<Identity>, Unusable> {
         // A bad Authorization header is not excused by a good cookie: the
         // caller must get the identity it named, or none.
         if headers.contains_key(AUTHORIZATION) {
-            let secret = bearer(headers)?;
-            let loaded = self.store.current();
-            let t = loaded.token(secret)?;
-            return Some(Identity {
+            let Some(secret) = bearer(headers) else {
+                return Ok(None);
+            };
+            let loaded = self.store.current()?;
+            return Ok(loaded.token(secret).map(|t| Identity {
                 user: t.name.clone(),
                 role: t.role,
                 via: Via::Token,
-            });
+            }));
         }
-        self.session(cookie(headers)?, Instant::now())
+        match self.cookie(headers) {
+            Some(id) => self.session(id, Instant::now()),
+            None => Ok(None),
+        }
+    }
+
+    fn cookie_name(&self) -> &'static str {
+        if self.cfg.tls {
+            SESSION_COOKIE_TLS
+        } else {
+            SESSION_COOKIE
+        }
+    }
+
+    /// `None` when there are several: something else on this host name is
+    /// setting cookies, and which one the browser puts first is not a basis to
+    /// choose on.
+    fn cookie<'a>(&self, headers: &'a HeaderMap) -> Option<&'a str> {
+        let mut found = headers
+            .get_all(COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .flat_map(|v| v.split(';'))
+            .filter_map(|p| p.trim().split_once('='))
+            .filter(|(k, _)| *k == self.cookie_name())
+            .map(|(_, v)| v);
+        let id = found.next()?;
+        found.next().is_none().then_some(id)
     }
 
     fn set_cookie(&self, id: &str, max_age: u64) -> Option<HeaderValue> {
         let secure = if self.cfg.tls { "; Secure" } else { "" };
         let v = Zeroizing::new(format!(
-            "{SESSION_COOKIE}={id}; HttpOnly; SameSite=Strict; Path=/; Max-Age={max_age}{secure}"
+            "{}={id}; HttpOnly; SameSite=Strict; Path=/; Max-Age={max_age}{secure}",
+            self.cookie_name()
         ));
         let mut v = HeaderValue::from_str(&v).ok()?;
         v.set_sensitive(true);
@@ -289,26 +327,19 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
     scheme.eq_ignore_ascii_case("bearer").then_some(secret)
 }
 
-/// `None` when there are several: something else on this host name is setting
-/// cookies, and which one the browser puts first is not a basis to choose on.
-fn cookie(headers: &HeaderMap) -> Option<&str> {
-    let mut found = headers
-        .get_all(COOKIE)
-        .iter()
-        .filter_map(|v| v.to_str().ok())
-        .flat_map(|v| v.split(';'))
-        .filter_map(|p| p.trim().split_once('='))
-        .filter(|(k, _)| *k == SESSION_COOKIE)
-        .map(|(_, v)| v);
-    let id = found.next()?;
-    found.next().is_none().then_some(id)
-}
-
 fn unauthorized() -> Response {
     let mut r = error(StatusCode::UNAUTHORIZED, "authentication required");
     r.headers_mut()
         .insert(WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
     r
+}
+
+/// Not 401: that would tell a client its credentials are no longer good.
+fn unusable() -> Response {
+    error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "the users file cannot be used; see the server log",
+    )
 }
 
 /// The gate in front of every API route.
@@ -322,8 +353,10 @@ pub(crate) async fn require(
     if on_session && req.method() == Method::POST {
         return next.run(req).await;
     }
-    let Some(who) = auth.identify(req.headers()) else {
-        return unauthorized();
+    let who = match auth.identify(req.headers()) {
+        Ok(Some(who)) => who,
+        Ok(None) => return unauthorized(),
+        Err(Unusable) => return unusable(),
     };
     if !matches!(*req.method(), Method::GET | Method::HEAD) {
         if who.via == Via::Session {
@@ -356,7 +389,10 @@ pub(crate) struct Credentials {
 
 /// One bucket per IPv4 address or IPv6 /64, the least a subscriber gets.
 fn source(peer: Option<Extension<Peer>>) -> IpAddr {
-    let ip = peer.map_or(IpAddr::V6(Ipv6Addr::UNSPECIFIED), |Extension(p)| p.0.ip());
+    bucket(peer.map_or(IpAddr::V6(Ipv6Addr::UNSPECIFIED), |Extension(p)| p.0.ip()))
+}
+
+pub(crate) fn bucket(ip: IpAddr) -> IpAddr {
     match ip.to_canonical() {
         IpAddr::V6(v6) => IpAddr::V6(Ipv6Addr::from_bits(v6.to_bits() & !u128::from(u64::MAX))),
         v4 => v4,
@@ -379,7 +415,9 @@ pub(crate) async fn login(
         // Not the rejection's own text, which quotes the body.
         Err(r) => return error(r.status(), "expected JSON {\"username\", \"password\"}"),
     };
-    let loaded = auth.store.current();
+    let Ok(loaded) = auth.store.current() else {
+        return unusable();
+    };
     let user = loaded.users.user(&username).cloned();
     // A name that is not a user's may well be a password typed in the wrong
     // field, so it is never logged.
@@ -414,7 +452,7 @@ pub(crate) async fn login(
         return error(StatusCode::UNAUTHORIZED, "wrong username or password");
     };
     auth.refund_attempt(from);
-    if let Some(old) = cookie(&headers) {
+    if let Some(old) = auth.cookie(&headers) {
         auth.end_session(old);
     }
     let started = auth.start_session(&user.name, &user.password_hash, Instant::now());
@@ -439,7 +477,7 @@ pub(crate) async fn logout(
 ) -> Response {
     // A token has no session of its own, and must not end one it was sent beside.
     if who.via == Via::Session {
-        if let Some(id) = cookie(&headers) {
+        if let Some(id) = auth.cookie(&headers) {
             auth.end_session(id);
             tracing::info!(target: "audit", user = %who.user, "logout");
         }
@@ -466,20 +504,25 @@ mod tests {
     #[test]
     fn sessions_expire_idle_and_absolute_and_are_capped() {
         let (_d, a) = setup();
-        let hash = a.store.current().users.users[0].password_hash.clone();
+        let hash = a.store.current().unwrap().users.users[0]
+            .password_hash
+            .clone();
         let t0 = Instant::now();
         let idle = a.cfg.idle;
         let id = a.start_session("user1@pve", &hash, t0).unwrap();
-        assert!(a.session(&id, t0 + idle / 2).is_some());
-        assert!(a.session(&id, t0 + idle).is_some(), "use renews idle");
-        assert!(a.session(&id, t0 + idle * 2).is_none());
+        assert!(a.session(&id, t0 + idle / 2).unwrap().is_some());
+        assert!(
+            a.session(&id, t0 + idle).unwrap().is_some(),
+            "use renews idle"
+        );
+        assert!(a.session(&id, t0 + idle * 2).unwrap().is_none());
         let id = a.start_session("user1@pve", &hash, t0).unwrap();
         let mut t = t0;
         while t + idle / 2 < t0 + a.cfg.absolute {
             t += idle / 2;
-            assert!(a.session(&id, t).is_some());
+            assert!(a.session(&id, t).unwrap().is_some());
         }
-        assert!(a.session(&id, t0 + a.cfg.absolute).is_none());
+        assert!(a.session(&id, t0 + a.cfg.absolute).unwrap().is_none());
         for _ in 0..SESSIONS_PER_USER * 2 {
             a.start_session("user1@pve", &hash, t0).unwrap();
         }

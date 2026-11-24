@@ -65,7 +65,9 @@ Create the first admin; the password is read from stdin:
 
     pct exec 9100 -- su -s /bin/sh concord -c '/usr/local/bin/concord user add NAME --role admin'
 
-Open `https://<ip>:8010/`. The certificate is self-signed.
+Open `https://<ip>:8010/`. The certificate is self-signed: compare the
+fingerprint in the service log (`pct exec 9100 -- logread`) with the one your
+browser shows before typing the password.
 
 Where things land: config in `/etc/concord/`; users and state in
 `/var/lib/concord/` (owned by `concord`, so back it up with the container);
@@ -79,11 +81,14 @@ Build or download the new template, then on the host:
 
     deploy.sh --upgrade 9100 --template concord-0.0.2-amd64.tar.xz
 
-It checks the `concord` tag and the marker, stops the container, takes a
-snapshot when the storage supports it (otherwise a warning), swaps the two
-binaries, starts it and checks health. If it is unhealthy, the previous
-binaries are restored and checked again. The config, secrets and state are not
-touched. Remove the snapshot afterwards with `pct delsnapshot`.
+It checks the `concord` tag and the marker, takes a snapshot while the
+container keeps running (a warning if the storage cannot), stops only the
+service, swaps the two binaries, starts the service and checks health. If it is
+unhealthy, the previous binaries are restored and checked again. Only the
+binaries are upgraded: not Alpine packages, the init script, or the version in
+`/etc/concord-ct`, which stays stale. To get those, deploy a new container from
+the new template. The config, secrets and state are not touched. Remove the
+snapshot afterwards with `pct delsnapshot`.
 
 ## Removal
 

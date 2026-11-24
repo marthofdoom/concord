@@ -67,3 +67,21 @@ test("hash round trip", () => {
   assert.deepEqual(L.parseHash("#/guests/pve%201/100").path, ["guests", "pve 1", "100"]);
   assert.deepEqual(L.parseHash("").path, []);
 });
+
+test("sign-out leaves only on 204 or 401", () => {
+  assert.equal(L.signOutOutcome(204), "left");
+  assert.equal(L.signOutOutcome(401), "left");
+  for (const st of [0, 403, 500, 200]) assert.equal(L.signOutOutcome(st), "failed");
+});
+
+test("guest detail failure carries no data", () => {
+  assert.equal(L.guestResult(200, { vmid: 1 }).data.vmid, 1);
+  const f = L.guestResult(0, null);
+  assert.equal(f.data, null);
+  assert.match(f.error, /no answer/);
+  assert.equal(L.guestResult(404, { error: "no such guest" }).error, "no such guest");
+});
+
+test("a 503 after data is never live", () => {
+  assert.equal(L.freshness({ fetchOk: true, takenAt: 1000, nowSecs: 1001, waiting: true }), "old");
+});
