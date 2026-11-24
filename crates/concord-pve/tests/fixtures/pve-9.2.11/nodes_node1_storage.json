@@ -1,0 +1,38 @@
+[
+  {
+    "active": 1,
+    "avail": 70866960384,
+    "content": "snippets,rootdir,import,images",
+    "enabled": 1,
+    "shared": 0,
+    "storage": "storage1",
+    "total": 94489280512,
+    "type": "dir",
+    "used": 23622320128,
+    "used_fraction": 0.25
+  },
+  {
+    "active": 1,
+    "avail": 70866960384,
+    "content": "vztmpl,snippets,rootdir,backup,iso,import,images",
+    "enabled": 1,
+    "shared": 0,
+    "storage": "storage2",
+    "total": 94489280512,
+    "type": "dir",
+    "used": 23622320128,
+    "used_fraction": 0.25
+  },
+  {
+    "active": 1,
+    "avail": 70866960384,
+    "content": "images,iso,backup,vztmpl",
+    "enabled": 1,
+    "shared": 0,
+    "storage": "local",
+    "total": 94489280512,
+    "type": "dir",
+    "used": 23622320128,
+    "used_fraction": 0.25
+  }
+]

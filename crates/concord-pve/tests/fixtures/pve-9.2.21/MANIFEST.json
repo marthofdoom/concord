@@ -1,0 +1,195 @@
+{
+  "endpoints": [
+    {
+      "file": "version.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/version"
+    },
+    {
+      "file": "nodes.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/nodes"
+    },
+    {
+      "file": "cluster_resources_type-vm.json",
+      "http_status": 200,
+      "params": {
+        "type": "vm"
+      },
+      "path": "/cluster/resources"
+    },
+    {
+      "file": "storage.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/storage"
+    },
+    {
+      "file": "pools.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/pools"
+    },
+    {
+      "file": "pools_storage2.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/pools/storage2"
+    },
+    {
+      "file": "nodes_node1_status.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/nodes/node1/status"
+    },
+    {
+      "file": "nodes_node1_storage.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/nodes/node1/storage"
+    },
+    {
+      "file": "nodes_node1_storage_storage3_content.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/nodes/node1/storage/storage3/content"
+    },
+    {
+      "file": "nodes_node1_storage_local_content.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/nodes/node1/storage/local/content"
+    },
+    {
+      "file": "nodes_node1_storage_local-lvm_content.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/nodes/node1/storage/local-lvm/content"
+    },
+    {
+      "file": "nodes_node1_qemu.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/nodes/node1/qemu"
+    },
+    {
+      "file": "nodes_node1_qemu_9001_config.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/nodes/node1/qemu/9001/config"
+    },
+    {
+      "file": "nodes_node1_qemu_9001_status_current.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/nodes/node1/qemu/9001/status/current"
+    },
+    {
+      "file": "nodes_node1_qemu_9001_snapshot.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/nodes/node1/qemu/9001/snapshot"
+    },
+    {
+      "file": "nodes_node1_qemu_102_config.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/nodes/node1/qemu/102/config"
+    },
+    {
+      "file": "nodes_node1_qemu_102_status_current.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/nodes/node1/qemu/102/status/current"
+    },
+    {
+      "file": "nodes_node1_qemu_102_snapshot.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/nodes/node1/qemu/102/snapshot"
+    },
+    {
+      "file": "nodes_node1_lxc.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/nodes/node1/lxc"
+    },
+    {
+      "file": "nodes_node1_lxc_101_config.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/nodes/node1/lxc/101/config"
+    },
+    {
+      "file": "nodes_node1_lxc_101_status_current.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/nodes/node1/lxc/101/status/current"
+    },
+    {
+      "file": "nodes_node1_lxc_101_snapshot.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/nodes/node1/lxc/101/snapshot"
+    },
+    {
+      "file": "nodes_node1_lxc_103_config.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/nodes/node1/lxc/103/config"
+    },
+    {
+      "file": "nodes_node1_lxc_103_status_current.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/nodes/node1/lxc/103/status/current"
+    },
+    {
+      "file": "nodes_node1_lxc_103_snapshot.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/nodes/node1/lxc/103/snapshot"
+    },
+    {
+      "file": "nodes_node1_tasks_limit-20.json",
+      "http_status": 200,
+      "params": {
+        "limit": "20"
+      },
+      "path": "/nodes/node1/tasks"
+    },
+    {
+      "file": "nodes_node1_tasks_UPID-node1-00001000-00010000-69579720-qmdelsnaps_status.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/nodes/node1/tasks/UPID%3Anode1%3A00001000%3A00010000%3A69579720%3Aqmdelsnapshot%3A9001%3Aroot%40pam%21token-1%3A/status"
+    },
+    {
+      "file": "nodes_node1_tasks_UPID-node1-00001000-00010000-695750D0-aptupdate-_status.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/nodes/node1/tasks/UPID%3Anode1%3A00001000%3A00010000%3A695750D0%3Aaptupdate%3A%3Aroot%40pam%3A/status"
+    },
+    {
+      "file": "errors/nodes_node1_qemu_999999999_status_current.json",
+      "http_status": 500,
+      "params": {},
+      "path": "/nodes/node1/qemu/999999999/status/current"
+    },
+    {
+      "file": "errors/nodes_node1_nonexistent.json",
+      "http_status": 501,
+      "params": {},
+      "path": "/nodes/node1/nonexistent"
+    },
+    {
+      "file": "errors/nodes_node1_tasks_UPID-node1-00000001-00000001-00000001-vzdump-999_status.json",
+      "http_status": 400,
+      "params": {},
+      "path": "/nodes/node1/tasks/UPID%3Anode1%3A00000001%3A00000001%3A00000001%3Avzdump%3A999999999%3Aroot%40pam%3A/status"
+    }
+  ],
+  "pve_version": "9.2.21"
+}

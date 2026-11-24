@@ -1,0 +1,54 @@
+{
+  "boot-info": {
+    "mode": "legacy-bios"
+  },
+  "cpu": 0.01,
+  "cpuinfo": {
+    "cores": 2,
+    "cpus": 2,
+    "family": "6",
+    "flags": "fpu vme de pse tsc msr pae mce cx8",
+    "hvm": "1",
+    "mhz": "2000.000",
+    "model": "Placeholder CPU",
+    "sockets": 1,
+    "user_hz": 100,
+    "vendor": "GenuineIntel"
+  },
+  "current-kernel": {
+    "machine": "x86_64",
+    "release": "7.0.14-29-pve",
+    "sysname": "Linux",
+    "version": "#1 SMP PREEMPT_DYNAMIC PMX 7.0.14-29 (2026-11-06T16:55Z)"
+  },
+  "idle": 100000,
+  "ksm": {
+    "shared": 0
+  },
+  "kversion": "Linux 7.0.14-29-pve #1 SMP PREEMPT_DYNAMIC PMX 7.0.14-29 (2026-11-06T16:55Z)",
+  "loadavg": [
+    "0.00",
+    "0.00",
+    "0.00"
+  ],
+  "memory": {
+    "available": 70866960384,
+    "free": 70866960384,
+    "total": 94489280512,
+    "used": 23622320128
+  },
+  "pveversion": "pve-manager/9.2.28/310cfbc506c4490f",
+  "rootfs": {
+    "avail": 70866960384,
+    "free": 70866960384,
+    "total": 94489280512,
+    "used": 23622320128
+  },
+  "swap": {
+    "free": 0,
+    "total": 0,
+    "used": 0
+  },
+  "uptime": 100000,
+  "wait": 0.001
+}

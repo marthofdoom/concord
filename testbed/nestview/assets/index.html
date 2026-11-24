@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nestview</title>
+<link rel="stylesheet" href="app.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<header>
+  <h1>nestview <span class="sub">nested PVE test estate</span></h1>
+  <div class="bar">
+    <label class="dry"><input type="checkbox" id="dry-run" checked> dry run (send nothing)</label>
+    <span id="fetched">waiting for first poll...</span>
+    <button id="logout" type="button">log out</button>
+  </div>
+</header>
+<main>
+  <section id="estate" class="card"><h2>Estate</h2><div class="body"></div></section>
+  <div id="vms"></div>
+  <section id="result" class="card"><h2>Last action</h2><pre class="body">none yet</pre></section>
+</main>
+</body>
+</html>

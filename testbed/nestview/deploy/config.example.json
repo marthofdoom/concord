@@ -1,0 +1,12 @@
+{
+  "bind": "0.0.0.0:8099",
+  "pve_url": "https://PVE_HOST:8006",
+  "fingerprint": "PVE_CERT_SHA256",
+  "node": "NODE_NAME",
+  "allowed_hosts": ["CT_IP:8099"],
+  "audit_log": "/var/lib/nestview/audit.jsonl",
+  "allowed_clients": ["OPERATOR_IP"],
+  "refresh_secs": 3,
+  "task_timeout_secs": 300,
+  "session_ttl_secs": 28800
+}

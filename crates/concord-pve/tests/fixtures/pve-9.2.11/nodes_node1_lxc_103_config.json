@@ -1,0 +1,28 @@
+{
+  "arch": "amd64",
+  "cores": 2,
+  "description": "placeholder text",
+  "digest": "0000000000000000000000000000000000000004",
+  "features": "nesting=1",
+  "hostname": "guest-103",
+  "lxc": [
+    [
+      "lxc.cgroup2.devices.allow",
+      "c 10:200 rwm"
+    ],
+    [
+      "lxc.mount.entry",
+      "/dev/net/tun dev/net/tun none bind,create=file"
+    ]
+  ],
+  "memory": 3072,
+  "mp0": "/srv/placeholder-4,mp=/mnt/placeholder-1",
+  "mp1": "/srv/placeholder-5,mp=/mnt/placeholder-2",
+  "mp2": "/srv/placeholder-1,mp=/mnt/placeholder-3",
+  "net0": "name=eth0,bridge=vmbr0,firewall=1,hwaddr=02:00:00:00:00:03,ip=dhcp,ip6=dhcp,type=veth",
+  "onboot": 1,
+  "ostype": "debian",
+  "rootfs": "storage1:103/vm-103-disk-0.raw,size=48G",
+  "startup": "up=30",
+  "swap": 512
+}

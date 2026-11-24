@@ -1,0 +1,27 @@
+{
+  "comment": "placeholder text",
+  "members": [
+    {
+      "cpu": 0.01,
+      "disk": 0,
+      "diskread": 1000000,
+      "diskwrite": 1000000,
+      "id": "qemu/9001",
+      "maxcpu": 2,
+      "maxdisk": 51539607552,
+      "maxmem": 3221225472,
+      "mem": 1610612736,
+      "memhost": 1610612736,
+      "name": "guest-9001",
+      "netin": 1000000,
+      "netout": 1000000,
+      "node": "node1",
+      "status": "running",
+      "template": 0,
+      "type": "qemu",
+      "uptime": 100000,
+      "vmid": 9001
+    }
+  ],
+  "poolid": "storage2"
+}

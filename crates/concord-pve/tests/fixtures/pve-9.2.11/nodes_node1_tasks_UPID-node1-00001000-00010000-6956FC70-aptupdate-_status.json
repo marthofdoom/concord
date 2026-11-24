@@ -1,0 +1,12 @@
+{
+  "exitstatus": "OK",
+  "id": "",
+  "node": "node1",
+  "pid": 4096,
+  "pstart": 65536,
+  "starttime": 1767308400,
+  "status": "stopped",
+  "type": "aptupdate",
+  "upid": "UPID:node1:00001000:00010000:6956FC70:aptupdate::root@pam:",
+  "user": "root@pam"
+}

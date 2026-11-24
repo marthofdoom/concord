@@ -1,0 +1,5 @@
+{
+  "errors": null,
+  "message": "Configuration file 'nodes/node1/qemu-server/999999999.conf' does not exist\n",
+  "status": 500
+}

@@ -1,0 +1,39 @@
+[
+  {
+    "content": "snippets,import,images,backup,iso,rootdir,vztmpl",
+    "create-base-path": 0,
+    "digest": "0000000000000000000000000000000000000001",
+    "is_mountpoint": "yes",
+    "nodes": "node1",
+    "path": "/srv/placeholder-1",
+    "prune-backups": "keep-all=1",
+    "shared": 1,
+    "storage": "storage3",
+    "type": "dir"
+  },
+  {
+    "content": "iso,import,images,rootdir",
+    "digest": "0000000000000000000000000000000000000001",
+    "is_mountpoint": "/srv/placeholder-2",
+    "mkdir": 1,
+    "nodes": "node1",
+    "path": "/srv/placeholder-3",
+    "storage": "storage2",
+    "type": "dir"
+  },
+  {
+    "content": "images,rootdir",
+    "digest": "0000000000000000000000000000000000000001",
+    "storage": "local-lvm",
+    "thinpool": "data",
+    "type": "lvmthin",
+    "vgname": "pve"
+  },
+  {
+    "content": "vztmpl,iso,backup,import",
+    "digest": "0000000000000000000000000000000000000001",
+    "path": "/srv/placeholder-4",
+    "storage": "local",
+    "type": "dir"
+  }
+]

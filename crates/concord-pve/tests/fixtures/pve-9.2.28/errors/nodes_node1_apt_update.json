@@ -1,0 +1,5 @@
+{
+  "errors": null,
+  "message": "Permission check failed (/nodes/node1, Sys.Modify)\n",
+  "status": 403
+}

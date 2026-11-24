@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/concord-core",
+    "crates/concord-server",
+    "crates/concord-agent",
+    "crates/concord-pve",
+    "testbed/nestview",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.88"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/marthofdoom/concord"
+authors = ["marthofdoom"]
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "process"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+lto = "thin"
+strip = true

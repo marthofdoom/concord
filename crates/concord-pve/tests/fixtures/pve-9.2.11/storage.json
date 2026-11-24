@@ -1,0 +1,29 @@
+[
+  {
+    "content": "iso,vztmpl,images,backup,snippets,rootdir,import",
+    "digest": "0000000000000000000000000000000000000001",
+    "path": "/srv/placeholder-1",
+    "prune-backups": "keep-all=1",
+    "shared": 0,
+    "storage": "storage2",
+    "type": "dir"
+  },
+  {
+    "content": "backup,iso,images,vztmpl",
+    "digest": "0000000000000000000000000000000000000001",
+    "path": "/srv/placeholder-2",
+    "shared": 0,
+    "storage": "local",
+    "type": "dir"
+  },
+  {
+    "content": "rootdir,import,images,snippets",
+    "digest": "0000000000000000000000000000000000000001",
+    "path": "/srv/placeholder-3",
+    "preallocation": "off",
+    "prune-backups": "keep-all=1",
+    "shared": 0,
+    "storage": "storage1",
+    "type": "dir"
+  }
+]

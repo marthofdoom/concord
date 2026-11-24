@@ -1,0 +1,53 @@
+[Unit]
+Description=nestview: dashboard and test controls for the nested PVE estate
+Documentation=file:///usr/local/share/doc/nestview/README.md
+# Never serve the UI without the firewall in place.
+Requires=nftables.service
+After=nftables.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nestview
+Group=nestview
+ExecStart=/usr/local/bin/nestview --config /etc/nestview/config.json
+# A status poller that ends makes nestview exit non-zero; this restarts it.
+Restart=on-failure
+RestartSec=5
+
+# Both secrets stay root:root 0600 in /etc/nestview, where the service user
+# can neither read nor rewrite them. systemd copies each into
+# $CREDENTIALS_DIRECTORY, readable by this service only: mode 0400 plus a
+# read ACL for User=, which on tmpfs stats as 0440 (the group bits show the
+# ACL mask). nestview refuses a credential that is writable or other-readable.
+LoadCredential=token:/etc/nestview/token
+LoadCredential=passphrase:/etc/nestview/passphrase
+
+# Audit log lives here (/var/lib/nestview/audit.jsonl), created 0700.
+StateDirectory=nestview
+StateDirectoryMode=0700
+UMask=0077
+
+# Sandboxing. These need the CT's nesting feature (pct create --features
+# nesting=1); without it the unit fails with status=226/NAMESPACE.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,16 @@
+{
+  "arch": "amd64",
+  "cores": 2,
+  "digest": "0000000000000000000000000000000000000005",
+  "features": "fuse=1,keyctl=1,nesting=1",
+  "hostname": "guest-103",
+  "memory": 3072,
+  "net0": "name=eth0,bridge=vmbr0,hwaddr=02:00:00:00:00:04,ip=dhcp,type=veth",
+  "net1": "name=eth1,bridge=vmbr0,hwaddr=02:00:00:00:00:05,ip=dhcp,tag=10,type=veth",
+  "onboot": 0,
+  "ostype": "debian",
+  "rootfs": "local-lvm:vm-103-disk-0,size=48G",
+  "swap": 512,
+  "unprivileged": 1,
+  "unused0": "storage1:103/vm-103-disk-0.raw"
+}

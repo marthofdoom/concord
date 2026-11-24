@@ -1,0 +1,48 @@
+[package]
+name = "concord-pve"
+description = "Proxmox VE HTTP API client for Concord: token auth, certificate pinning, task polling."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+# Canned-response PveApi for downstream crates' tests; always on for this
+# crate's own tests.
+mock = []
+# Read-only capture of real PVE responses as sanitised fixtures, and the replay
+# of those fixtures. Dev tooling, not part of the client proper.
+capture = ["mock"]
+
+[[example]]
+name = "capture"
+required-features = ["capture"]
+
+[[example]]
+name = "leakscan"
+required-features = ["capture"]
+
+[dependencies]
+concord-core = { path = "../concord-core" }
+async-trait = "0.1"
+# Only to name `hyper::ext::ReasonPhrase` on reqwest's responses; reqwest
+# already depends on hyper 1 with `http1`, so this adds no new crate.
+hyper = { version = "1", default-features = false, features = ["http1"] }
+percent-encoding = "2"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-no-provider", "json"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+subtle = "2"
+thiserror.workspace = true
+tokio = { workspace = true, features = ["time"] }
+zeroize = "1"
+
+[dev-dependencies]
+concord-pve = { path = ".", features = ["mock", "capture"] }
+rcgen = "0.13"
+tokio = { workspace = true, features = ["macros", "rt", "test-util", "net", "io-util"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }

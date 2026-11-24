@@ -1,0 +1,11 @@
+[
+  {
+    "content": "iso,snippets,images,rootdir,vztmpl,backup",
+    "digest": "0000000000000000000000000000000000000001",
+    "path": "/srv/placeholder-1",
+    "priority": 0,
+    "prune-backups": "keep-all=1",
+    "storage": "local",
+    "type": "dir"
+  }
+]

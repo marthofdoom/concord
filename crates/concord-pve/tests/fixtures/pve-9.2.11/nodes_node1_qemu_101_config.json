@@ -1,0 +1,21 @@
+{
+  "affinity": "0",
+  "agent": "1",
+  "balloon": 1536,
+  "boot": "order=scsi0;ide2;net0",
+  "cores": 2,
+  "cpuunits": 100,
+  "digest": "0000000000000000000000000000000000000002",
+  "ide2": "none,media=cdrom",
+  "memory": "3072",
+  "meta": "creation-qemu=10.0.0,ctime=1767229200",
+  "name": "guest-101",
+  "net0": "virtio=02:00:00:00:00:01,bridge=vmbr0,firewall=1",
+  "numa": 0,
+  "ostype": "l26",
+  "scsi0": "storage2:101/vm-101-disk-0.qcow2,discard=on,iothread=1,size=48G",
+  "scsihw": "virtio-scsi-single",
+  "smbios1": "uuid=00000000-0000-4000-8000-000000000001",
+  "sockets": 1,
+  "vmgenid": "00000000-0000-4000-8000-000000000002"
+}

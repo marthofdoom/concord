@@ -1,0 +1,22 @@
+[package]
+name = "concord-agent"
+description = "Host agent, not built yet: will keep Concord's own container alive on the PVE node."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "concord-agent"
+path = "src/main.rs"
+
+# Kept deliberately minimal. This binary is dropped onto a Proxmox host, where
+# adding runtime dependencies is not acceptable — it must be a single static
+# file plus a systemd unit.
+[dependencies]
+concord-core = { path = "../concord-core" }
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

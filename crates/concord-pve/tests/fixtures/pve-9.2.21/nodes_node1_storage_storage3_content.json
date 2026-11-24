@@ -1,0 +1,121 @@
+[
+  {
+    "content": "backup",
+    "ctime": 1767272400,
+    "format": "tar.zst",
+    "size": 51539607552,
+    "subtype": "lxc",
+    "vmid": 101,
+    "volid": "storage3:backup/vzdump-lxc-101-2026_01_01-13_00_00.tar.zst"
+  },
+  {
+    "content": "backup",
+    "ctime": 1767265200,
+    "format": "tar",
+    "notes": "placeholder text",
+    "size": 51539607552,
+    "subtype": "lxc",
+    "vmid": 9101,
+    "volid": "storage3:backup/vzdump-lxc-9101-2026_01_01-11_00_00.tar"
+  },
+  {
+    "content": "backup",
+    "ctime": 1767268800,
+    "format": "tar",
+    "size": 51539607552,
+    "subtype": "lxc",
+    "vmid": 9101,
+    "volid": "storage3:backup/vzdump-lxc-9101-2026_01_01-12_00_00.tar"
+  },
+  {
+    "content": "backup",
+    "ctime": 1767279600,
+    "format": "tar.zst",
+    "notes": "placeholder text",
+    "size": 51539607552,
+    "subtype": "lxc",
+    "vmid": 9104,
+    "volid": "storage3:backup/vzdump-lxc-9104-2026_01_01-15_00_00.tar.zst"
+  },
+  {
+    "content": "backup",
+    "ctime": 1767250800,
+    "format": "tar.zst",
+    "notes": "placeholder text",
+    "protected": 1,
+    "size": 51539607552,
+    "subtype": "lxc",
+    "vmid": 9105,
+    "volid": "storage3:backup/vzdump-lxc-9105-2026_01_01-07_00_00.tar.zst"
+  },
+  {
+    "content": "backup",
+    "ctime": 1767283200,
+    "format": "vma",
+    "notes": "placeholder text",
+    "size": 51539607552,
+    "subtype": "qemu",
+    "vmid": 9102,
+    "volid": "storage3:backup/vzdump-qemu-9102-2026_01_01-16_00_00.vma"
+  },
+  {
+    "content": "backup",
+    "ctime": 1767258000,
+    "format": "vma.zst",
+    "notes": "placeholder text",
+    "protected": 1,
+    "size": 51539607552,
+    "subtype": "qemu",
+    "vmid": 9103,
+    "volid": "storage3:backup/vzdump-qemu-9103-2026_01_01-09_00_00.vma.zst"
+  },
+  {
+    "content": "backup",
+    "ctime": 1767261600,
+    "format": "vma",
+    "size": 51539607552,
+    "subtype": "qemu",
+    "vmid": 9103,
+    "volid": "storage3:backup/vzdump-qemu-9103-2026_01_01-10_00_00.vma"
+  },
+  {
+    "content": "backup",
+    "ctime": 1767243600,
+    "format": "vma.zst",
+    "notes": "placeholder text",
+    "size": 51539607552,
+    "subtype": "qemu",
+    "vmid": 102,
+    "volid": "storage3:backup/vzdump-qemu-102-2026_01_01-05_00_00.vma.zst"
+  },
+  {
+    "content": "backup",
+    "ctime": 1767254400,
+    "format": "vma.zst",
+    "size": 51539607552,
+    "subtype": "qemu",
+    "vmid": 102,
+    "volid": "storage3:backup/vzdump-qemu-102-2026_01_01-08_00_00.vma.zst"
+  },
+  {
+    "content": "iso",
+    "ctime": 1767229200,
+    "format": "iso",
+    "size": 51539607552,
+    "volid": "storage3:iso/file-1.iso"
+  },
+  {
+    "content": "vztmpl",
+    "ctime": 1767232800,
+    "format": "tzst",
+    "size": 51539607552,
+    "volid": "storage3:vztmpl/file-3.tar.zst"
+  },
+  {
+    "content": "vztmpl",
+    "ctime": 1767247200,
+    "format": "tar",
+    "size": 51539607552,
+    "volid": "storage3:vztmpl/file-4.tar"
+  }
+]

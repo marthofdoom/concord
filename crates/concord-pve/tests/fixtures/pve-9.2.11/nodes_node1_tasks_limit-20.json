@@ -1,0 +1,38 @@
+[
+  {
+    "endtime": 1767312000,
+    "id": "",
+    "node": "node1",
+    "pid": 4096,
+    "pstart": 65536,
+    "starttime": 1767308400,
+    "status": "OK",
+    "type": "aptupdate",
+    "upid": "UPID:node1:00001000:00010000:6956FC70:aptupdate::root@pam:",
+    "user": "root@pam"
+  },
+  {
+    "endtime": 1767304800,
+    "id": "101",
+    "node": "node1",
+    "pid": 4096,
+    "pstart": 65536,
+    "starttime": 1767301200,
+    "status": "OK",
+    "type": "vzdump",
+    "upid": "UPID:node1:00001000:00010000:6956E050:vzdump:101:root@pam:",
+    "user": "root@pam"
+  },
+  {
+    "endtime": 1767297600,
+    "id": "",
+    "node": "node1",
+    "pid": 4096,
+    "pstart": 65536,
+    "starttime": 1767294000,
+    "status": "OK",
+    "type": "vzdump",
+    "upid": "UPID:node1:00001000:00010000:6956C430:vzdump::root@pam:",
+    "user": "root@pam"
+  }
+]

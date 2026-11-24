@@ -1,0 +1,5 @@
+{
+  "errors": null,
+  "message": "Method 'GET /nodes/node1/nonexistent' not implemented",
+  "status": 501
+}

@@ -1,0 +1,26 @@
+{
+  "arch": "amd64",
+  "cores": 2,
+  "cpulimit": "2",
+  "digest": "0000000000000000000000000000000000000005",
+  "features": "nesting=1",
+  "hostname": "guest-104",
+  "lxc": [
+    [
+      "lxc.cgroup2.devices.allow",
+      "c 10:200 rwm"
+    ],
+    [
+      "lxc.mount.entry",
+      "/dev/net/tun dev/net/tun none bind,create=file"
+    ]
+  ],
+  "memory": 3072,
+  "mp0": "/srv/placeholder-6,mp=/mnt/placeholder-4",
+  "net0": "name=eth0,bridge=vmbr0,firewall=1,hwaddr=02:00:00:00:00:04,ip=dhcp,type=veth",
+  "onboot": 1,
+  "ostype": "debian",
+  "rootfs": "storage1:104/vm-104-disk-0.raw,size=48G",
+  "swap": 512,
+  "unprivileged": 1
+}

@@ -1,0 +1,22 @@
+[
+  {
+    "content": "images",
+    "ctime": 1767276000,
+    "format": "raw",
+    "parent": null,
+    "size": 51539607552,
+    "used": 23622320128,
+    "vmid": 102,
+    "volid": "storage1:102/vm-102-disk-0.raw"
+  },
+  {
+    "content": "rootdir",
+    "ctime": 1767315600,
+    "format": "raw",
+    "parent": null,
+    "size": 51539607552,
+    "used": 23622320128,
+    "vmid": 103,
+    "volid": "storage1:103/vm-103-disk-0.raw"
+  }
+]

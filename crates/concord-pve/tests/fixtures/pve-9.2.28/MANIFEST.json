@@ -1,0 +1,105 @@
+{
+  "endpoints": [
+    {
+      "file": "version.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/version"
+    },
+    {
+      "file": "nodes.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/nodes"
+    },
+    {
+      "file": "cluster_resources_type-vm.json",
+      "http_status": 200,
+      "params": {
+        "type": "vm"
+      },
+      "path": "/cluster/resources"
+    },
+    {
+      "file": "storage.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/storage"
+    },
+    {
+      "file": "pools.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/pools"
+    },
+    {
+      "file": "nodes_node1_status.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/nodes/node1/status"
+    },
+    {
+      "file": "nodes_node1_storage.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/nodes/node1/storage"
+    },
+    {
+      "file": "nodes_node1_storage_local_content.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/nodes/node1/storage/local/content"
+    },
+    {
+      "file": "nodes_node1_qemu.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/nodes/node1/qemu"
+    },
+    {
+      "file": "nodes_node1_lxc.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/nodes/node1/lxc"
+    },
+    {
+      "file": "nodes_node1_tasks_limit-20.json",
+      "http_status": 200,
+      "params": {
+        "limit": "20"
+      },
+      "path": "/nodes/node1/tasks"
+    },
+    {
+      "file": "nodes_node1_tasks_UPID-node1-00001000-00010000-6955D520-aptupdate-_status.json",
+      "http_status": 200,
+      "params": {},
+      "path": "/nodes/node1/tasks/UPID%3Anode1%3A00001000%3A00010000%3A6955D520%3Aaptupdate%3A%3Aroot%40pam%3A/status"
+    },
+    {
+      "file": "errors/nodes_node1_qemu_999999999_status_current.json",
+      "http_status": 500,
+      "params": {},
+      "path": "/nodes/node1/qemu/999999999/status/current"
+    },
+    {
+      "file": "errors/nodes_node1_nonexistent.json",
+      "http_status": 501,
+      "params": {},
+      "path": "/nodes/node1/nonexistent"
+    },
+    {
+      "file": "errors/nodes_node1_apt_update.json",
+      "http_status": 403,
+      "params": {},
+      "path": "/nodes/node1/apt/update"
+    },
+    {
+      "file": "errors/nodes_node1_tasks_UPID-node1-00000001-00000001-00000001-vzdump-999_status.json",
+      "http_status": 400,
+      "params": {},
+      "path": "/nodes/node1/tasks/UPID%3Anode1%3A00000001%3A00000001%3A00000001%3Avzdump%3A999999999%3Aroot%40pam%3A/status"
+    }
+  ],
+  "pve_version": "9.2.28"
+}

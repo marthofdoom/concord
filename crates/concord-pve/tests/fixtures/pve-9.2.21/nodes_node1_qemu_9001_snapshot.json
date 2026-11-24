@@ -1,0 +1,15 @@
+[
+  {
+    "description": "placeholder text",
+    "name": "snapshot-1",
+    "snaptime": 1767337200,
+    "vmstate": 0
+  },
+  {
+    "description": "placeholder text",
+    "digest": "0000000000000000000000000000000000000002",
+    "name": "current",
+    "parent": "snapshot-1",
+    "running": 1
+  }
+]

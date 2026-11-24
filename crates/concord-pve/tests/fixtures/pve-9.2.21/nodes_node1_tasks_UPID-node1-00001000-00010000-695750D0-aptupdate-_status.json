@@ -1,0 +1,12 @@
+{
+  "exitstatus": "command 'placeholder' failed: exit code 1",
+  "id": "",
+  "node": "node1",
+  "pid": 4096,
+  "pstart": 65536,
+  "starttime": 1767330000,
+  "status": "stopped",
+  "type": "aptupdate",
+  "upid": "UPID:node1:00001000:00010000:695750D0:aptupdate::root@pam:",
+  "user": "root@pam"
+}

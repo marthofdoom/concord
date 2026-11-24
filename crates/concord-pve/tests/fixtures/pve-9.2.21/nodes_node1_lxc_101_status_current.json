@@ -1,0 +1,29 @@
+{
+  "cpu": 0.01,
+  "cpus": 2,
+  "disk": 15032385536,
+  "diskread": 1000000,
+  "diskwrite": 1000000,
+  "ha": {
+    "managed": 0
+  },
+  "maxdisk": 51539607552,
+  "maxmem": 3221225472,
+  "maxswap": 805306368,
+  "mem": 1610612736,
+  "name": "guest-101",
+  "netin": 1000000,
+  "netout": 1000000,
+  "pid": 4096,
+  "pressurecpufull": "0.00",
+  "pressurecpusome": "0.01",
+  "pressureiofull": "0.00",
+  "pressureiosome": "0.00",
+  "pressurememoryfull": "0.00",
+  "pressurememorysome": "0.00",
+  "status": "running",
+  "swap": 201326592,
+  "type": "lxc",
+  "uptime": 100000,
+  "vmid": 101
+}

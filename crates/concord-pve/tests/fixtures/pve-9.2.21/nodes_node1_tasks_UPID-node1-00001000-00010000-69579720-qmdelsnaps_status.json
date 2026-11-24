@@ -1,0 +1,13 @@
+{
+  "exitstatus": "OK",
+  "id": "9001",
+  "node": "node1",
+  "pid": 4096,
+  "pstart": 65536,
+  "starttime": 1767348000,
+  "status": "stopped",
+  "tokenid": "token-1",
+  "type": "qmdelsnapshot",
+  "upid": "UPID:node1:00001000:00010000:69579720:qmdelsnapshot:9001:root@pam!token-1:",
+  "user": "root@pam"
+}

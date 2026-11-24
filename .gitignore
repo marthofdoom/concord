@@ -1,0 +1,23 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# Build artifacts (the release artifact is attached to the GitHub release,
+# never committed)
+/dist/
+*.deb
+*.tar.zst
+
+# Local state that must never be committed
+*.db
+*.db-journal
+secrets.json
+config.local.toml
+.env
+
+# Editor and tool session data
+.claude/
+
+# Site settings; copy testbed/site.env.example
+/testbed/site.env
