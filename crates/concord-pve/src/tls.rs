@@ -3,9 +3,10 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::crypto::ring::default_provider;
 use rustls::crypto::{CryptoProvider, WebPkiSupportedAlgorithms};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use rustls::{CertificateError, OtherError, SignatureScheme};
+use rustls::{CertificateError, ClientConfig, OtherError, SignatureScheme};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
@@ -160,6 +161,20 @@ impl PinnedVerifier {
             algs: provider.signature_verification_algorithms,
         }
     }
+}
+
+/// A TLS client configuration that trusts only the certificate `pin` names.
+pub fn pinned_client_config(pin: Fingerprint) -> Result<ClientConfig, PveError> {
+    // Named explicitly rather than taken from the process default so this
+    // client's TLS behaviour does not depend on what else is linked in.
+    let provider = Arc::new(default_provider());
+    let verifier = PinnedVerifier::new(pin, &provider);
+    Ok(ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| PveError::InvalidRequest(format!("TLS setup failed: {e}")))?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(verifier))
+        .with_no_client_auth())
 }
 
 impl ServerCertVerifier for PinnedVerifier {

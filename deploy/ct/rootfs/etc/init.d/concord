@@ -1,0 +1,24 @@
+#!/sbin/openrc-run
+# Concord. supervise-daemon restarts it when it exits, and its output goes
+# through logger into busybox syslogd's in-memory ring (see conf.d/syslog), so
+# logs cannot fill the small rootfs.
+
+description="Concord"
+supervisor=supervise-daemon
+command=/usr/local/bin/concord
+command_user=concord:concord
+directory=/var/lib/concord
+respawn_delay=3
+respawn_max=0
+output_logger="logger -t concord -p daemon.info"
+error_logger="logger -t concord -p daemon.err"
+
+depend() {
+	need net
+	use logger
+}
+
+start_pre() {
+	export CONCORD_CONFIG="${CONCORD_CONFIG:-/etc/concord/concord.toml}"
+	checkpath -d -m 0700 -o concord:concord /var/lib/concord
+}

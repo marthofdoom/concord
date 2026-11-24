@@ -4,14 +4,16 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
 use concord_inventory::{InventoryConfig, Poller};
-use concord_server::{guard_host, router, AppState};
+use concord_server::{guard_host, router, AppState, Auth, AuthConfig};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tower::ServiceExt;
 
 fn app(listen: &str) -> Router {
     let (_, inventory) = Poller::new(Vec::new(), InventoryConfig::default());
+    // No such file: no users, which is all these tests need.
+    let auth = Auth::new(AuthConfig::new("/nonexistent/users.toml".into(), false)).expect("auth");
     guard_host(
-        router(AppState { inventory }),
+        router(AppState { inventory }, auth),
         listen.parse::<SocketAddr>().expect("addr"),
     )
 }

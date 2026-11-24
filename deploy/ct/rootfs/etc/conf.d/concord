@@ -1,0 +1,2 @@
+# Environment for the concord service (sourced by the init script).
+CONCORD_CONFIG=/etc/concord/concord.toml

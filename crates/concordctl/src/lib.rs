@@ -2,12 +2,16 @@
 
 use std::fmt::Write as _;
 use std::io::Write;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use concord_inventory::{Conflict, EstateSnapshot, Guest, HostSummary};
+use concord_pve::{pinned_client_config, Fingerprint};
 use serde::Deserialize;
 use serde_json::Value;
+use url::{Host, Url};
+use zeroize::Zeroizing;
 
 const DEFAULT_SERVER: &str = "http://127.0.0.1:8010";
 
@@ -21,6 +25,15 @@ pub struct Cli {
     /// Concord API base URL.
     #[arg(long, env = "CONCORD_SERVER", default_value = DEFAULT_SERVER, global = true)]
     pub server: String,
+    /// SHA-256 fingerprint of the server's certificate, as the server logs it
+    /// on start. Required for https.
+    #[arg(long, env = "CONCORD_FINGERPRINT", global = true)]
+    pub fingerprint: Option<String>,
+    /// File (mode 0600) holding the API token; CONCORD_TOKEN is used otherwise.
+    /// There is no flag for the token itself: arguments are visible to every
+    /// process on the machine.
+    #[arg(long, env = "CONCORD_TOKEN_FILE", global = true)]
+    pub token_file: Option<PathBuf>,
     /// Print the API's JSON body instead of a table.
     #[arg(long, global = true)]
     pub json: bool,
@@ -52,6 +65,8 @@ pub enum Command {
 
 #[derive(Debug, thiserror::Error)]
 pub enum CtlError {
+    #[error("{0}")]
+    Config(String),
     #[error("cannot reach {server}: {reason}")]
     Connect { server: String, reason: String },
     /// The server answered with an error; `message` is its `error` field.
@@ -106,32 +121,104 @@ fn chain(e: &dyn std::error::Error) -> String {
     s
 }
 
+fn shown(base: &Url) -> String {
+    sanitize(&base.origin().ascii_serialization())
+}
+
+/// The server, and the certificate to expect of it. Plain http is only for
+/// loopback, so neither the token nor the estate crosses a network in clear.
+fn target(cli: &Cli) -> Result<(Url, Option<Fingerprint>), CtlError> {
+    let config = |m: &str| Err(CtlError::Config(m.to_string()));
+    // The text is not repeated in errors: it may hold a pasted password.
+    let Ok(base) = cli.server.parse::<Url>() else {
+        return config("--server is not a URL");
+    };
+    if !base.username().is_empty()
+        || base.password().is_some()
+        || base.query().is_some()
+        || base.fragment().is_some()
+    {
+        return config("--server must be a plain base URL such as https://192.0.2.10:8010");
+    }
+    let pin = match cli.fingerprint.as_deref().filter(|f| !f.is_empty()) {
+        Some(f) => Some(
+            f.parse::<Fingerprint>()
+                .map_err(|e| CtlError::Config(e.to_string()))?,
+        ),
+        None => None,
+    };
+    match (base.scheme(), pin) {
+        ("https", Some(pin)) => Ok((base, Some(pin))),
+        ("https", None) => config(
+            "https needs --fingerprint (or CONCORD_FINGERPRINT); the server logs it on start",
+        ),
+        ("http", Some(_)) => config("--fingerprint cannot be honoured over plain http"),
+        ("http", None) if is_loopback(&base) => Ok((base, None)),
+        ("http", None) => config("plain http is only for loopback; use https"),
+        _ => config("--server must be http or https"),
+    }
+}
+
+fn is_loopback(base: &Url) -> bool {
+    match base.host() {
+        Some(Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
+        Some(Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(Host::Ipv6(ip)) => ip.to_canonical().is_loopback(),
+        None => false,
+    }
+}
+
+fn token(cli: &Cli) -> Result<Option<Zeroizing<String>>, CtlError> {
+    let text = match &cli.token_file {
+        Some(p) => concord_config::read_private(p).map_err(|e| CtlError::Config(e.to_string()))?,
+        // The error is not shown: for a non-UTF-8 value it quotes it.
+        None => match std::env::var("CONCORD_TOKEN") {
+            Ok(v) => Zeroizing::new(v),
+            Err(std::env::VarError::NotPresent) => return Ok(None),
+            Err(_) => return Err(CtlError::Config("CONCORD_TOKEN is not UTF-8".into())),
+        },
+    };
+    let t = text.trim();
+    // Checked here so that a bad one is never quoted by the HTTP library.
+    if t.is_empty() || !t.bytes().all(|b| b.is_ascii_graphic()) {
+        return Err(CtlError::Config(
+            "the API token is empty or malformed".into(),
+        ));
+    }
+    Ok(Some(Zeroizing::new(t.to_string())))
+}
+
 async fn fetch(cli: &Cli, path: &str, query: &[(&str, &str)]) -> Result<Value, CtlError> {
-    // https servers need a crypto provider; ignoring the error is correct when
-    // one is already installed.
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    let url = format!("{}{}", cli.server.trim_end_matches('/'), path);
+    let (base, pin) = target(cli)?;
+    let token = token(cli)?;
+    let connect_err = |e: reqwest::Error| CtlError::Connect {
+        server: shown(&base),
+        // without_url: the query string is not needed in the message.
+        reason: chain(&e.without_url()),
+    };
     // No proxy: the operator's proxy variables must not receive a request
-    // meant for the Concord server. Timeouts so a silent server cannot hang us.
-    let client = reqwest::Client::builder()
+    // meant for the Concord server. No redirects: one could carry the token to
+    // another port or to plain http. Timeouts so a silent server cannot hang us.
+    let mut builder = reqwest::Client::builder()
         .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|e| CtlError::Connect {
-            server: cli.server.clone(),
-            reason: chain(&e),
-        })?;
-    let resp = client
-        .get(&url)
-        .query(query)
-        .send()
-        .await
-        .map_err(|e| CtlError::Connect {
-            server: cli.server.clone(),
-            // without_url: the query string is not needed in the message.
-            reason: chain(&e.without_url()),
-        })?;
+        .timeout(Duration::from_secs(30));
+    if let Some(pin) = pin {
+        let tls = pinned_client_config(pin).map_err(|e| CtlError::Config(e.to_string()))?;
+        builder = builder.use_preconfigured_tls(tls).https_only(true);
+    } else {
+        // reqwest builds a TLS client even for http, and wants a provider.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+    let client = builder.build().map_err(connect_err)?;
+    let url = format!("{}{path}", base.as_str().trim_end_matches('/'));
+    let mut req = client.get(&url);
+    if let Some(t) = token {
+        // Marked sensitive by reqwest, so it stays out of debug output.
+        req = req.bearer_auth(t.as_str());
+    }
+    let resp = req.query(query).send().await.map_err(connect_err)?;
     let status = resp.status();
     // Status first: an error page need not be JSON.
     if !status.is_success() {

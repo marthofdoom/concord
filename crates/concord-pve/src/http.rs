@@ -1,18 +1,15 @@
 use std::fmt;
-use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use reqwest::header::{ACCEPT, AUTHORIZATION};
 use reqwest::{Client, Url};
-use rustls::crypto::ring::default_provider;
-use rustls::ClientConfig;
 use serde_json::Value;
 
 use crate::api::{is_dot_or_empty, Method, PveApi};
 use crate::auth::ApiToken;
 use crate::error::PveError;
-use crate::tls::{find_pin_mismatch, Fingerprint, PinnedVerifier};
+use crate::tls::{find_pin_mismatch, pinned_client_config, Fingerprint};
 
 /// Longest slice of a non-JSON error body kept in an error message.
 const MAX_BODY_IN_ERROR: usize = 512;
@@ -66,16 +63,7 @@ impl HttpPveClient {
         }
         let auth = token.header_value()?;
 
-        // Named explicitly rather than taken from the process default so this
-        // client's TLS behaviour does not depend on what else is linked in.
-        let provider = Arc::new(default_provider());
-        let verifier = PinnedVerifier::new(fingerprint, &provider);
-        let tls = ClientConfig::builder_with_provider(provider)
-            .with_safe_default_protocol_versions()
-            .map_err(|e| PveError::InvalidRequest(format!("TLS setup failed: {e}")))?
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(verifier))
-            .with_no_client_auth();
+        let tls = pinned_client_config(fingerprint)?;
 
         let client = Client::builder()
             .use_preconfigured_tls(tls)

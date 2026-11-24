@@ -47,7 +47,7 @@ pub use normalise::normalise;
 #[cfg(any(test, feature = "capture"))]
 pub use sanitize::{Leak, LeakScanner, Sanitizer, ESTATE_DIGESTS_ENV};
 pub use task::{wait_for_task, TaskOutcome, Upid, MIN_POLL_INTERVAL};
-pub use tls::Fingerprint;
+pub use tls::{pinned_client_config, Fingerprint};
 
 #[cfg(test)]
 mod fixture_tests;

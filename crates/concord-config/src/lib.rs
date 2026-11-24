@@ -13,6 +13,7 @@
 
 mod budget;
 mod config;
+mod private;
 mod secrets;
 
 use std::path::PathBuf;
@@ -23,6 +24,7 @@ use concord_pve::{ApiToken, HttpPveClient, PveApi, PveError};
 
 pub use budget::Budget;
 pub use config::{Config, HostConfig};
+pub use private::{lock_beside, read_private, unsafe_for_root, write_private, DirLock};
 pub use secrets::{token_env_var, Secrets, SECRETS_FILE_ENV};
 
 #[derive(Debug, thiserror::Error)]
@@ -41,7 +43,7 @@ pub enum ConfigError {
     #[error("{field}: {reason}")]
     Invalid { field: String, reason: String },
 
-    #[error("secrets file {}: {reason}", path.display())]
+    #[error("credential file {}: {reason}", path.display())]
     SecretsFile { path: PathBuf, reason: String },
 
     #[error("no token secret for host {host:?}: add it to the secrets file or set {env}")]

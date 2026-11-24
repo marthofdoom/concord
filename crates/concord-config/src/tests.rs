@@ -191,7 +191,7 @@ fn an_implausible_unknown_key_is_not_repeated() {
 #[cfg(unix)]
 #[test]
 fn only_this_user_or_root_may_own_the_secrets_file() {
-    use crate::secrets::trusted_owner;
+    use crate::private::trusted_owner;
     assert!(trusted_owner(1000, 1000) && trusted_owner(0, 1000) && trusted_owner(0, 0));
     assert!(!trusted_owner(1001, 1000) && !trusted_owner(1000, 0));
 }
@@ -377,4 +377,42 @@ fn the_environment_overrides() {
     .unwrap_err();
     assert!(!format!("{e} {e:?}").contains(SECRET), "{e:?}");
     assert!(e.to_string().starts_with("CONCORD_TOKEN_PVE1"), "{e}");
+}
+
+#[test]
+fn access_settings_default_and_resolve_beside_the_config() {
+    let base = include_str!("../../../concord.example.toml");
+    let cfg = Config::parse(base).unwrap();
+    assert_eq!(cfg.users_path(), Path::new("/var/lib/concord/users.toml"));
+    for only in ["tls_cert = \"c\"\n", "tls_key = \"k\"\n"] {
+        assert!(Config::parse(&format!("{only}{base}")).is_err());
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("c.toml");
+    let text = format!("tls_cert = \"c\"\ntls_key = \"k\"\nstate_dir = \"s\"\n{base}");
+    std::fs::write(&f, text).unwrap();
+    let cfg = Config::load(&f).unwrap();
+    assert_eq!(cfg.tls_key, Some(dir.path().join("k")));
+    assert_eq!(cfg.users_path(), dir.path().join("s/users.toml"));
+}
+
+#[cfg(unix)]
+#[test]
+fn root_does_not_write_where_others_decide_what_a_path_means() {
+    use crate::private::unsafe_dir;
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    // As root in CI the directory is root's, and shared is what makes it unsafe.
+    let d = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o1777)).unwrap();
+    let why = unsafe_dir(d.path()).unwrap();
+    assert!(why.contains("su -s"), "{why}");
+    // Reached from below, and through a link, it is the same directory.
+    std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
+    std::fs::create_dir(d.path().join("sub")).unwrap();
+    assert!(unsafe_dir(&d.path().join("sub")).is_some());
+    let d2 = tempfile::tempdir().unwrap();
+    symlink(d.path(), d2.path().join("link")).unwrap();
+    assert!(unsafe_dir(&d2.path().join("link")).is_some());
+    assert!(unsafe_dir(&d.path().join("absent")).is_some());
+    assert_eq!(unsafe_dir(Path::new("/")), None);
 }

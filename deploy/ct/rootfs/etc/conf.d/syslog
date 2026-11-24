@@ -1,0 +1,3 @@
+# -C512 (no space: busybox takes the size attached): 512 KiB in-memory circular buffer, read with `logread`. -t: no host
+# name in lines. Nothing is written to disk.
+SYSLOGD_OPTS="-t -C512"

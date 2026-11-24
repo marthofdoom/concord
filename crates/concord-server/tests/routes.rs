@@ -4,23 +4,34 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use concord_inventory::{InventoryConfig, Poller};
 use concord_pve::{FixtureSet, PveApi};
-use concord_server::{router, AppState};
+use concord_server::users::{Role, Users};
+use concord_server::{router, AppState, Auth, AuthConfig};
 use http_body_util::BodyExt;
 use serde_json::Value;
 use tower::ServiceExt;
 
-async fn get(app: &axum::Router, uri: &str) -> (StatusCode, Value) {
-    let resp = app
-        .clone()
-        .oneshot(Request::get(uri).body(Body::empty()).expect("req"))
-        .await
-        .expect("resp");
+struct App {
+    router: axum::Router,
+    token: String,
+    _dir: tempfile::TempDir,
+}
+
+async fn get(app: &App, uri: &str) -> (StatusCode, Value) {
+    let req = Request::get(uri)
+        .header("authorization", format!("Bearer {}", app.token))
+        .body(Body::empty())
+        .expect("req");
+    let resp = app.router.clone().oneshot(req).await.expect("resp");
     let status = resp.status();
     let bytes = resp.into_body().collect().await.expect("body").to_bytes();
     (status, serde_json::from_slice(&bytes).expect("json"))
 }
 
-async fn app(cycles: usize) -> axum::Router {
+async fn app(cycles: usize) -> App {
+    let dir = tempfile::tempdir().expect("tmp");
+    let users = dir.path().join("users.toml");
+    let token = Users::add_token(&users, "t", Role::ReadOnly).expect("token");
+    let auth = Auth::new(AuthConfig::new(users, false)).expect("auth");
     let set = FixtureSet::committed("9.2.21").expect("fixture");
     let client: Arc<dyn PveApi> = Arc::new(set.mock());
     let (mut poller, inventory) =
@@ -28,7 +39,11 @@ async fn app(cycles: usize) -> axum::Router {
     for _ in 0..cycles {
         poller.run_cycle().await;
     }
-    router(AppState { inventory })
+    App {
+        router: router(AppState { inventory }, auth),
+        token: token.to_string(),
+        _dir: dir,
+    }
 }
 
 #[tokio::test]

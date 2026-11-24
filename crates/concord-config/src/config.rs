@@ -12,8 +12,9 @@ use url::Url;
 use crate::secrets::token_env_var;
 use crate::{error_line, Budget, ConfigError};
 
-/// Loopback, because the API has no authentication of its own (CON-38).
+/// Loopback, so that reaching the API from elsewhere is a decision.
 const DEFAULT_LISTEN: SocketAddr = SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), 8010);
+const DEFAULT_STATE_DIR: &str = "/var/lib/concord";
 const DEFAULT_POLL_SECS: u64 = 10;
 /// Far past any sensible setting; keeps arithmetic on the durations, such as
 /// `restore_delay`, away from overflow.
@@ -31,6 +32,16 @@ pub struct Config {
     pub fence_deadline_secs: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secrets_file: Option<PathBuf>,
+    /// What Concord itself keeps, such as its generated certificate.
+    pub state_dir: PathBuf,
+    /// API users and tokens. [`Config::users_path`] applies the default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub users_file: Option<PathBuf>,
+    /// Both or neither.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_cert: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_key: Option<PathBuf>,
     pub hosts: Vec<HostConfig>,
     pub budget: Budget,
 }
@@ -61,6 +72,10 @@ struct RawConfig {
     poll_interval_secs: Option<u64>,
     fence_deadline_secs: Option<u64>,
     secrets_file: Option<PathBuf>,
+    state_dir: Option<PathBuf>,
+    users_file: Option<PathBuf>,
+    tls_cert: Option<PathBuf>,
+    tls_key: Option<PathBuf>,
     #[serde(default)]
     hosts: Vec<toml::Value>,
     budget: Option<toml::Value>,
@@ -77,17 +92,28 @@ struct RawHost {
 }
 
 impl Config {
-    /// Reads and validates `path`. A relative `secrets_file` is taken relative
-    /// to the configuration file, so it does not depend on the working
-    /// directory a service happens to start in.
+    /// Reads and validates `path`. Relative paths are taken relative to the
+    /// configuration file, so they do not depend on the working directory a
+    /// service happens to start in.
     pub fn load(path: &Path) -> Result<Config, ConfigError> {
         let text = std::fs::read_to_string(path).map_err(|source| ConfigError::Read {
             path: path.to_path_buf(),
             source,
         })?;
         let mut cfg = Config::parse(&text)?;
-        if let (Some(file), Some(dir)) = (&cfg.secrets_file, path.parent()) {
-            cfg.secrets_file = Some(dir.join(file));
+        if let Some(dir) = path.parent() {
+            cfg.state_dir = dir.join(&cfg.state_dir);
+            for file in [
+                &mut cfg.secrets_file,
+                &mut cfg.users_file,
+                &mut cfg.tls_cert,
+                &mut cfg.tls_key,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                *file = dir.join(&*file);
+            }
         }
         Ok(cfg)
     }
@@ -136,11 +162,20 @@ impl Config {
         if let Some(secs) = raw.fence_deadline_secs {
             check_secs("fence_deadline_secs", secs)?;
         }
+        match (&raw.tls_cert, &raw.tls_key) {
+            (Some(_), None) => return Err(invalid("tls_key", "required with tls_cert")),
+            (None, Some(_)) => return Err(invalid("tls_cert", "required with tls_key")),
+            _ => {}
+        }
         Ok(Config {
             listen: raw.listen.unwrap_or(DEFAULT_LISTEN),
             poll_interval_secs,
             fence_deadline_secs: raw.fence_deadline_secs,
             secrets_file: raw.secrets_file,
+            state_dir: raw.state_dir.unwrap_or_else(|| DEFAULT_STATE_DIR.into()),
+            users_file: raw.users_file,
+            tls_cert: raw.tls_cert,
+            tls_key: raw.tls_key,
             hosts,
             budget,
         })
@@ -148,6 +183,12 @@ impl Config {
 
     pub fn poll_interval(&self) -> Duration {
         Duration::from_secs(self.poll_interval_secs)
+    }
+
+    pub fn users_path(&self) -> PathBuf {
+        self.users_file
+            .clone()
+            .unwrap_or_else(|| self.state_dir.join("users.toml"))
     }
 
     /// The override, or [`FENCE_DEADLINE`].
