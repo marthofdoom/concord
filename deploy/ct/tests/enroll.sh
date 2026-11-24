@@ -8,7 +8,7 @@ trap 'rm -rf -- "$T" "${CONCORD_TMPFS:-$T}"' EXIT
 mkdir -p "$T/bin"
 export T
 U=concord-monitor R=pve
-export A=PVE""APIToken
+export A=PVEAPIToken
 CONCORD_TMPFS=$(mktemp -d /dev/shm/concord-test.XXXXXX)
 export CONCORD_TMPFS
 export UID_="$U@$R"
@@ -80,7 +80,10 @@ pct)
 	case $1 in
 	config) [[ -d $C ]] || exit 1; printf 'tags: concord\nnet0: name=eth0,ip=192.0.2.50/24\n'; cat "$T/desc" ;;
 	status) [[ -d $C ]] && echo 'status: running' ;;
-	create) mkdir "$C"; printf 'description: %s\n' "${*: -1}" >"$T/desc" ;;
+	create)
+		# Under 077 a real container's root cannot enter its own root directory.
+		[ "$(umask)" = 0022 ] || { echo "pct create under umask $(umask)" >&2; exit 1; }
+		mkdir "$C"; printf 'description: %s\n' "${*: -1}" >"$T/desc" ;;
 	destroy) rm -rf "$C" ;;
 	set) printf 'description: %s\n' "$4" >"$T/desc" ;;
 	pull) case $3 in *concord-ct) echo 'concord-ct 1' >"$4" ;; *) cp "$(map "$3")" "$4" ;; esac ;;

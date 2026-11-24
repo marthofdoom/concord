@@ -101,7 +101,7 @@ PVE_REALM=pve
 PVE_USERID=$PVE_USER@$PVE_REALM
 PVE_ROLE=PVEAuditor
 # In two pieces only so that the leak scan does not take it for a token.
-AUTH_SCHEME=PVE""APIToken
+AUTH_SCHEME=PVEAPIToken
 NAME_RE='[A-Za-z0-9][A-Za-z0-9._-]{0,62}'
 IPV4_RE='[0-9]{1,3}(\.[0-9]{1,3}){3}'
 # The last label starts with a letter: 0x7f000001 would be read as a number.
@@ -771,6 +771,9 @@ net="name=eth0,bridge=$bridge,firewall=1,ip=$ip"
 
 say "creating container $vmid"
 ((dry)) || creating=1
+# pct inherits the umask, and under 077 the container's own root could not
+# enter its root directory. What this script writes stays in the 0700 workdir.
+umask 022
 run pct create "$vmid" "$template" \
 	--hostname "$hostname" --ostype alpine --unprivileged 1 \
 	--memory 128 --swap 0 --cores 1 --rootfs "$storage:$rootfs_gb" \
@@ -785,6 +788,7 @@ if [[ $ip != dhcp ]]; then run pct set "$vmid" --description "$(notes "${ip%/*}"
 # config first and is restarted once it has one.
 say "starting"
 run pct start "$vmid"
+umask 077
 say "pushing config and secrets"
 run pct push "$vmid" "$config" /etc/concord/concord.toml --perms 0640 --user 0 --group "$CONCORD_GID"
 run pct push "$vmid" "$secrets" /etc/concord/secrets.toml --perms 0600 --user "$CONCORD_GID" --group "$CONCORD_GID"
