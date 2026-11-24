@@ -5,7 +5,6 @@ use std::time::Duration;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use reqwest::{Client, Url};
-use serde::Deserialize;
 use serde_json::Value;
 use zeroize::Zeroizing;
 
@@ -55,20 +54,6 @@ pub enum LoginOutcome {
     Refused,
     /// The password was right; that is not a login.
     NeedTfa(TfaChallenge),
-}
-
-#[derive(Deserialize)]
-struct Envelope {
-    data: Answer,
-}
-
-/// What `create_ticket_do` returns, less what is not needed.
-#[derive(Deserialize)]
-struct Answer {
-    username: String,
-    ticket: Zeroizing<String>,
-    #[serde(rename = "NeedTFA")]
-    need_tfa: Option<Value>,
 }
 
 impl RootLogin {
@@ -164,23 +149,37 @@ fn put(body: &mut Vec<u8>, key: &str, value: &str) {
 fn outcome(body: &[u8]) -> Result<LoginOutcome, PveError> {
     // The parser's own errors can quote the ticket.
     let bad = || PveError::Decode("not a login answer".into());
-    let a = serde_json::from_slice::<Envelope>(body)
-        .map_err(|_| bad())?
-        .data;
-    if a.username != USER {
+    // Objects by name: a derived struct would take an array of the same values.
+    let Ok(Value::Object(mut envelope)) = serde_json::from_slice(body) else {
+        return Err(bad());
+    };
+    match envelope.get("success") {
+        None | Some(Value::Bool(true)) => {}
+        Some(v) if v.as_u64() == Some(1) => {}
+        Some(_) => return Err(bad()),
+    }
+    let Some(Value::Object(mut a)) = envelope.remove("data") else {
+        return Err(bad());
+    };
+    let Some(Value::String(ticket)) = a.remove("ticket") else {
+        return Err(bad());
+    };
+    let ticket = Zeroizing::new(ticket);
+    if a.get("username").and_then(Value::as_str) != Some(USER) {
         return Err(bad());
     }
     // `PVE:<data>:<time>::<signature>`, with the data's colons as %3A.
-    let mut parts = a.ticket.splitn(3, ':');
+    let mut parts = ticket.splitn(3, ':');
     let (Some("PVE"), Some(data), Some(rest)) = (parts.next(), parts.next(), parts.next()) else {
         return Err(bad());
     };
-    if rest.is_empty() {
+    if !matches!(rest.split_once("::"), Some((t, sig)) if !t.is_empty() && !sig.is_empty()) {
         return Err(bad());
     }
+    let complete = data == USER;
     let tfa = data.strip_prefix("!tfa!");
-    match (a.need_tfa.is_some(), tfa) {
-        (false, None) if data == USER => Ok(LoginOutcome::Accepted),
+    match (a.contains_key("NeedTFA"), tfa) {
+        (false, None) if complete => Ok(LoginOutcome::Accepted),
         (true, Some(challenge)) => {
             let text = percent_encoding::percent_decode_str(challenge)
                 .decode_utf8()
@@ -195,7 +194,7 @@ fn outcome(body: &[u8]) -> Result<LoginOutcome, PveError> {
             Ok(LoginOutcome::NeedTfa(TfaChallenge {
                 totp: has("totp"),
                 recovery: has("recovery"),
-                ticket: a.ticket,
+                ticket,
             }))
         }
         _ => Err(bad()),
@@ -223,7 +222,11 @@ mod tests {
             (USER, full, r#","NeedTFA":0"#),
             ("user1@pve", full, ""),
             (USER, "PVE:user1@pve:65000000::c2ln", ""),
+            (USER, full, r#","NeedTFA":null"#),
             (USER, "PVE:root@pam", ""),
+            (USER, "PVE:root@pam:65000000", ""),
+            (USER, "PVE:root@pam:65000000::", ""),
+            (USER, "PVE:root@pam:::c2ln", ""),
             (USER, "", ""),
         ] {
             let e = of(u, t, n).unwrap_err();
@@ -236,7 +239,14 @@ mod tests {
             }
             o => panic!("{o:?}"),
         }
-        assert!(outcome(b"{\"data\":null}").is_err());
+        for b in [
+            r#"{"data":null}"#.to_string(),
+            format!(r#"[["root@pam","{full}",null]]"#),
+            format!(r#"{{"data":["root@pam","{full}",null]}}"#),
+            format!(r#"{{"success":0,"data":{{"username":"root@pam","ticket":"{full}"}}}}"#),
+        ] {
+            assert!(outcome(b.as_bytes()).is_err(), "{b}");
+        }
     }
 
     #[tokio::test]

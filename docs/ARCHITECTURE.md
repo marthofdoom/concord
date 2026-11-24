@@ -59,7 +59,9 @@ root on any one host is an admin of all of them, which is why `pve_root_login`
 can turn it off. New local names may not start with `root@`; one already there
 takes precedence, and its password goes to no host. An unreachable host answers
 differently from a refusal, so a host that is down can be told from an unknown
-one; otherwise the two take equally long. Because it checks passwords at the
+one; otherwise a refusal takes the same least time, counted from when its check
+starts, for both. A check once started runs to its end and its audit line whether
+or not the client stays; a client that left gets no session. Because it checks passwords at the
 host, changing root's password there does not end a session already open here;
 restarting Concord does.
 

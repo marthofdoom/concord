@@ -4,6 +4,7 @@
 //! is made hard to forget.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -53,10 +54,13 @@ const HASH_WAIT: Duration = Duration::from_secs(5);
 /// Checks one host is asked to make at once. Per host, so that a hung one holds
 /// up nobody else's sign-in; and apart from the hashes, so not local users'.
 const PVE_AT_ONCE: usize = 4;
+/// Logins waiting for a slot of one host.
+const PVE_QUEUE: usize = 16;
 const PVE_WAIT: Duration = Duration::from_secs(5);
 /// PVE's own ticket lifetime.
 const PVE_ABSOLUTE: Duration = Duration::from_secs(2 * 3600);
-/// No refusal of `root@...` comes sooner, whether or not there is such a host.
+/// No refusal of `root@...` comes sooner after its check began, whether or not
+/// there is such a host.
 /// Past the three seconds PVE holds a refusal back for.
 const PVE_FLOOR: Duration = Duration::from_secs(5);
 const CHALLENGE_LIFE: Duration = Duration::from_secs(120);
@@ -146,7 +150,27 @@ impl Session {
 struct PveHost {
     name: String,
     login: RootLogin,
-    slots: Arc<Semaphore>,
+    slots: Slots,
+}
+
+struct Slots {
+    run: Arc<Semaphore>,
+    queue: Semaphore,
+}
+
+impl Slots {
+    fn new() -> Self {
+        Slots {
+            run: Arc::new(Semaphore::new(PVE_AT_ONCE)),
+            queue: Semaphore::new(PVE_QUEUE),
+        }
+    }
+
+    async fn take(&self) -> Option<OwnedSemaphorePermit> {
+        let _queued = self.queue.try_acquire().ok()?;
+        let got = tokio::time::timeout(PVE_WAIT, self.run.clone().acquire_owned()).await;
+        got.ok()?.ok()
+    }
 }
 
 /// A password accepted by `host`, awaiting the second factor.
@@ -174,7 +198,7 @@ pub struct Auth {
     hashes: Arc<Semaphore>,
     pve: Vec<PveHost>,
     /// What an unknown host is queued on, so that it queues the same.
-    no_host: Arc<Semaphore>,
+    no_host: Slots,
     pending: Mutex<HashMap<[u8; 32], Pending>>,
 }
 
@@ -186,7 +210,6 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 impl Auth {
     pub fn new(cfg: AuthConfig) -> Result<Arc<Auth>, UsersError> {
         let dummy = hash_password(&hex(&random::<32>()?[..]))?;
-        let slots = || Arc::new(Semaphore::new(PVE_AT_ONCE));
         let auth = Auth {
             store: Store::new(cfg.users_file.clone(), !cfg.pve.is_empty()),
             pve: cfg
@@ -195,10 +218,10 @@ impl Auth {
                 .map(|(name, login)| PveHost {
                     name: name.clone(),
                     login: login.clone(),
-                    slots: slots(),
+                    slots: Slots::new(),
                 })
                 .collect(),
-            no_host: slots(),
+            no_host: Slots::new(),
             pending: Mutex::default(),
             cfg,
             dummy,
@@ -209,6 +232,13 @@ impl Auth {
         // Loaded now so that its warnings are in the start-up log.
         let _ = auth.store.current();
         Ok(Arc::new(auth))
+    }
+
+    /// The challenges there still are; the rest, and their tickets, go.
+    fn pending(&self, now: Instant) -> MutexGuard<'_, HashMap<[u8; 32], Pending>> {
+        let mut map = lock(&self.pending);
+        map.retain(|_, p| now.duration_since(p.created) < self.cfg.challenge_life);
+        map
     }
 
     fn live(&self, s: &Session, now: Instant) -> bool {
@@ -522,7 +552,7 @@ pub(crate) async fn login(
             password: None,
             challenge: Some(c),
             tfa: Some(t),
-        } => return second_factor(&auth, from, &headers, &c, &t).await,
+        } => return second_factor(&auth, from, &headers, &c, t).await,
         _ => return error(StatusCode::UNPROCESSABLE_ENTITY, usage),
     };
     let Ok(loaded) = auth.store.current() else {
@@ -532,7 +562,7 @@ pub(crate) async fn login(
     // A local user by such a name goes first, and its password to no host.
     if user.is_none() && !auth.pve.is_empty() {
         if let Some(host) = username.strip_prefix("root@") {
-            return pve_login(&auth, from, &headers, host, &password).await;
+            return pve_login(&auth, from, &headers, host, password).await;
         }
     }
     // A name that is not a user's may well be a password typed in the wrong
@@ -551,21 +581,32 @@ pub(crate) async fn login(
     let phc = user
         .as_ref()
         .map_or_else(|| auth.dummy.clone(), |u| u.password_hash.clone());
+    let known = user.is_some();
     let checked = tokio::task::spawn_blocking(move || {
-        // Held here, not in the request: a client that hangs up must not free
-        // the slot while its hash is still running.
+        // Held and audited here, not in the request: a client that hangs up
+        // must not free the slot while its hash is still running, nor hide it.
         let _permit = permit;
-        password.len() <= MAX_PASSWORD && verify_password(&phc, &password)
+        let ok = password.len() <= MAX_PASSWORD && verify_password(&phc, &password) && known;
+        audit_check(&audit_name, from, ok);
+        ok
     })
     .await
     .unwrap_or(false);
     let Some(user) = user.filter(|_| checked) else {
-        tracing::warn!(target: "audit", user = %audit_name, %from, "login refused");
         return error(StatusCode::UNAUTHORIZED, WRONG);
     };
     auth.refund_attempt(from);
     let hash = Some(user.password_hash.as_str());
     open(&auth, &headers, &user.name, user.role, hash, from)
+}
+
+/// An accepted check is a login only once the client gets its session.
+fn audit_check(user: &str, from: IpAddr, ok: bool) {
+    if ok {
+        tracing::info!(target: "audit", %user, %from, "credentials accepted");
+    } else {
+        tracing::warn!(target: "audit", %user, %from, "login refused");
+    }
 }
 
 fn throttled(user: &str, from: IpAddr, wait: Duration) -> Response {
@@ -599,70 +640,93 @@ fn open(
     (StatusCode::NO_CONTENT, [(SET_COOKIE, cookie)]).into_response()
 }
 
-async fn pve_slot(slots: &Arc<Semaphore>) -> Option<OwnedSemaphorePermit> {
-    let got = tokio::time::timeout(PVE_WAIT, slots.clone().acquire_owned()).await;
-    got.ok()?.ok()
+fn busy(auth: &Auth, from: IpAddr) -> Response {
+    auth.refund_attempt(from);
+    error(StatusCode::SERVICE_UNAVAILABLE, "too many logins at once")
 }
 
 async fn pve_login(
-    auth: &Auth,
+    auth: &Arc<Auth>,
     from: IpAddr,
     headers: &HeaderMap,
     host: &str,
-    password: &str,
+    password: Zeroizing<String>,
 ) -> Response {
-    let began = Instant::now();
     let found = auth.pve.iter().position(|h| h.name == host);
     let host = found.map(|i| &auth.pve[i]);
     let name = host.map_or_else(|| "<unknown>".into(), |h| format!("root@{}", h.name));
-    if let Err(wait) = auth.begin_attempt(from, began) {
+    if let Err(wait) = auth.begin_attempt(from, Instant::now()) {
         return throttled(&name, from, wait);
     }
-    let Some(permit) = pve_slot(host.map_or(&auth.no_host, |h| &h.slots)).await else {
-        auth.refund_attempt(from);
-        return error(StatusCode::SERVICE_UNAVAILABLE, "too many logins at once");
+    let Some(permit) = host.map_or(&auth.no_host, |h| &h.slots).take().await else {
+        return busy(auth, from);
     };
-    let outcome = match host {
-        Some(h) if password.len() <= MAX_PASSWORD => h.login.check(password).await,
-        _ => Ok(LoginOutcome::Refused),
+    let login = host
+        .filter(|_| password.len() <= MAX_PASSWORD)
+        .map(|h| h.login.clone());
+    let check = async move {
+        match login {
+            Some(l) => l.check(&password).await,
+            None => Ok(LoginOutcome::Refused),
+        }
     };
-    match (found, outcome) {
-        (Some(_), Ok(LoginOutcome::Accepted)) => {
+    match (found, run_check(auth, permit, &name, from, check).await) {
+        (Some(_), Some(LoginOutcome::Accepted)) => {
             auth.refund_attempt(from);
             open(auth, headers, &name, Role::Admin, None, from)
         }
-        (Some(i), Ok(LoginOutcome::NeedTfa(tfa))) => challenge(auth, from, i, tfa, &name),
-        (_, Err(e)) => pve_failed(auth, began, permit, &name, from, &e).await,
-        (_, Ok(_)) => pve_refused(auth, began, permit, &name, from, WRONG).await,
+        (Some(i), Some(LoginOutcome::NeedTfa(tfa))) => challenge(auth, from, i, tfa),
+        (_, None) => unreachable_host(),
+        (_, Some(_)) => error(StatusCode::UNAUTHORIZED, WRONG),
     }
 }
 
-/// The slot is held for the wait, so that a refusal costs the same slot time
-/// whichever host was named.
-async fn pve_refused(
+/// `None` is a check that could not be made.
+///
+/// In a task of its own: PVE holds a refusal back, so a client that hung up
+/// before it would otherwise have its answer, and no audit line, and its slot
+/// back. One is spawned per slot. Only the request makes a session or a
+/// challenge, so a client that is gone gets neither.
+async fn run_check(
     auth: &Auth,
-    began: Instant,
-    _slot: OwnedSemaphorePermit,
+    permit: OwnedSemaphorePermit,
     name: &str,
     from: IpAddr,
-    msg: &'static str,
-) -> Response {
-    tracing::warn!(target: "audit", user = %name, %from, "login refused");
-    tokio::time::sleep(auth.cfg.pve_floor.saturating_sub(began.elapsed())).await;
-    error(StatusCode::UNAUTHORIZED, msg)
+    check: impl Future<Output = Result<LoginOutcome, PveError>> + Send + 'static,
+) -> Option<LoginOutcome> {
+    let (name, floor) = (name.to_string(), auth.cfg.pve_floor);
+    let task = tokio::spawn(async move {
+        // Held to the end of the wait, so that a refusal costs the same slot
+        // time whichever host was named; and the wait starts here, so that it
+        // takes as long however long the queue was.
+        let _permit = permit;
+        let began = Instant::now();
+        let outcome = match check.await {
+            Ok(LoginOutcome::NeedTfa(tfa)) => {
+                tracing::info!(target: "audit", user = %name, %from, "second factor needed");
+                return Some(LoginOutcome::NeedTfa(tfa));
+            }
+            Ok(LoginOutcome::Accepted) => {
+                audit_check(&name, from, true);
+                return Some(LoginOutcome::Accepted);
+            }
+            Ok(LoginOutcome::Refused) => {
+                audit_check(&name, from, false);
+                Some(LoginOutcome::Refused)
+            }
+            Err(e) => {
+                tracing::warn!(target: "audit", user = %name, %from, error = %e, "login not checked");
+                None
+            }
+        };
+        tokio::time::sleep(floor.saturating_sub(began.elapsed())).await;
+        outcome
+    });
+    task.await.ok().flatten()
 }
 
 /// The attempt is not refunded: that would be unlimited tries at a host.
-async fn pve_failed(
-    auth: &Auth,
-    began: Instant,
-    _slot: OwnedSemaphorePermit,
-    name: &str,
-    from: IpAddr,
-    e: &PveError,
-) -> Response {
-    tracing::warn!(target: "audit", user = %name, %from, error = %e, "login not checked");
-    tokio::time::sleep(auth.cfg.pve_floor.saturating_sub(began.elapsed())).await;
+fn unreachable_host() -> Response {
     coded(
         StatusCode::SERVICE_UNAVAILABLE,
         "host_unreachable",
@@ -671,8 +735,7 @@ async fn pve_failed(
 }
 
 /// Not a login, and the attempt stays counted until it is one.
-fn challenge(auth: &Auth, from: IpAddr, host: usize, tfa: TfaChallenge, name: &str) -> Response {
-    tracing::info!(target: "audit", user = %name, %from, "second factor needed");
+fn challenge(auth: &Auth, from: IpAddr, host: usize, tfa: TfaChallenge) -> Response {
     let mut kinds = Vec::new();
     if tfa.totp {
         kinds.push("totp");
@@ -691,8 +754,7 @@ fn challenge(auth: &Auth, from: IpAddr, host: usize, tfa: TfaChallenge, name: &s
         return error(StatusCode::INTERNAL_SERVER_ERROR, "no randomness");
     };
     let now = Instant::now();
-    let mut map = lock(&auth.pending);
-    map.retain(|_, p| now.duration_since(p.created) < auth.cfg.challenge_life);
+    let mut map = auth.pending(now);
     if map.len() >= MAX_CHALLENGES {
         if let Some(k) = map.iter().min_by_key(|(_, p)| p.created).map(|(k, _)| *k) {
             map.remove(&k);
@@ -713,49 +775,61 @@ fn challenge(auth: &Auth, from: IpAddr, host: usize, tfa: TfaChallenge, name: &s
 }
 
 async fn second_factor(
-    auth: &Auth,
+    auth: &Arc<Auth>,
     from: IpAddr,
     headers: &HeaderMap,
     id: &str,
-    response: &str,
+    response: Zeroizing<String>,
 ) -> Response {
     const REFUSED: &str = "second factor refused; sign in again";
     let began = Instant::now();
     if let Err(wait) = auth.begin_attempt(from, began) {
         return throttled("<second factor>", from, wait);
     }
+    let none = || {
+        tracing::warn!(target: "audit", %from, "second factor refused: no such challenge");
+        error(StatusCode::UNAUTHORIZED, REFUSED)
+    };
+    let key = digest(id);
+    let host = auth
+        .pending(began)
+        .get(&key)
+        .filter(|p| p.from == from)
+        .map(|p| p.host);
+    let Some(host) = host.map(|i| &auth.pve[i]) else {
+        return none();
+    };
+    let Some(permit) = host.slots.take().await else {
+        return busy(auth, from);
+    };
     // A local user by the host's name, or a file that can no longer be used,
     // may have come about since the password.
     let Ok(loaded) = auth.store.current() else {
         return unusable();
     };
-    // Taken before it is tried: one answer each.
-    let pending = lock(&auth.pending)
-        .remove(&digest(id))
-        .filter(|p| p.from == from && began.duration_since(p.created) < auth.cfg.challenge_life);
-    let Some(p) = pending else {
-        tracing::warn!(target: "audit", %from, "second factor refused: no such challenge");
-        return error(StatusCode::UNAUTHORIZED, REFUSED);
+    // Taken before it is tried, but after the queue: one answer each, and it
+    // is not spent on being turned away.
+    let Some(p) = auth.pending(Instant::now()).remove(&key) else {
+        return none();
     };
-    let host = &auth.pve[p.host];
     let name = format!("root@{}", host.name);
-    let Some(permit) = pve_slot(&host.slots).await else {
-        return error(StatusCode::SERVICE_UNAVAILABLE, "too many logins at once");
+    let login = (response.len() <= MAX_TFA && loaded.users.user(&name).is_none())
+        .then(|| host.login.clone());
+    let check = async move {
+        Ok(match login {
+            Some(l) if l.respond(&p.tfa, &response).await? => LoginOutcome::Accepted,
+            _ => LoginOutcome::Refused,
+        })
     };
-    let checked = if response.len() > MAX_TFA || loaded.users.user(&name).is_some() {
-        Ok(false)
-    } else {
-        host.login.respond(&p.tfa, response).await
-    };
-    match checked {
-        Ok(true) => {
+    match run_check(auth, permit, &name, from, check).await {
+        Some(LoginOutcome::Accepted) => {
             // This attempt, and the password's that led to it.
             auth.refund_attempt(from);
             auth.refund_attempt(from);
             open(auth, headers, &name, Role::Admin, None, from)
         }
-        Ok(false) => pve_refused(auth, began, permit, &name, from, REFUSED).await,
-        Err(e) => pve_failed(auth, began, permit, &name, from, &e).await,
+        Some(_) => error(StatusCode::UNAUTHORIZED, REFUSED),
+        None => unreachable_host(),
     }
 }
 

@@ -2,7 +2,7 @@
 
 use std::io::Write;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use concord_inventory::{InventoryConfig, Poller};
@@ -28,6 +28,10 @@ enum Mode {
     /// Half a ticket, not marked as one.
     Sly,
     Hang,
+    /// Answers a second late.
+    Slow,
+    /// The second factor only.
+    SlowTfa,
     Oversize,
     Redirect,
 }
@@ -69,8 +73,8 @@ fn answer(mode: Mode, req: &str) -> String {
         return refused;
     }
     match mode {
-        Mode::Plain | Mode::Hang => ticket(FULL, false),
-        Mode::Tfa => ticket(HALF, true),
+        Mode::Plain | Mode::Hang | Mode::Slow => ticket(FULL, false),
+        Mode::Tfa | Mode::SlowTfa => ticket(HALF, true),
         Mode::WebauthnOnly => ticket(WEBAUTHN, true),
         Mode::Sly => ticket(HALF, false),
         Mode::Oversize => http("200 OK", &" ".repeat(70_000)),
@@ -126,6 +130,10 @@ async fn fake(mode: Mode) -> Fake {
                 log.lock().expect("lock").push(req.clone());
                 if matches!(mode, Mode::Hang) {
                     tokio::time::sleep(Duration::from_secs(60)).await;
+                }
+                let second = req.contains("tfa-challenge=");
+                if matches!(mode, Mode::Slow) || (matches!(mode, Mode::SlowTfa) && second) {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
                 }
                 let _ = tls.write_all(answer(mode, &req).as_bytes()).await;
                 let _ = tls.shutdown().await;
@@ -404,18 +412,145 @@ impl Write for Log {
     }
 }
 
-// Global, as other tests in other threads would otherwise have the callsites
-// cached as of no interest. It then sees their logs too, which is no harm.
+/// Global, as other tests in other threads would otherwise have the callsites
+/// cached as of no interest. It sees every test's logs, so names are the tests'
+/// own where that matters.
+fn log() -> &'static Log {
+    static LOG: OnceLock<Log> = OnceLock::new();
+    LOG.get_or_init(|| {
+        let log = Log::default();
+        let sink = log.clone();
+        let sub = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .with_writer(move || sink.clone())
+            .finish();
+        tracing::subscriber::set_global_default(sub).expect("only here");
+        log
+    })
+}
+
+/// How many audit lines say `what` of `user`.
+fn audited(what: &str, user: &str) -> usize {
+    let text = String::from_utf8_lossy(&log().0.lock().expect("lock")).to_string();
+    let want = format!("audit: {what} user={user} ");
+    text.lines().filter(|l| l.contains(&want)).count()
+}
+
+async fn until(what: impl Fn() -> bool) {
+    let t = Instant::now();
+    while !what() {
+        assert!(t.elapsed() < Duration::from_secs(5));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+impl Server {
+    /// Sends, and hangs up soon after.
+    async fn hang_up(&self, body: Value, after: Duration) {
+        let r = self
+            .client
+            .post(format!("{}/api/v1/session", self.base))
+            .json(&body)
+            .timeout(after)
+            .send()
+            .await;
+        assert!(r.is_err(), "was answered");
+    }
+}
+
+const SOON: Duration = Duration::from_millis(300);
+
+#[tokio::test]
+async fn hanging_up_neither_hides_a_guess_nor_frees_its_slot() {
+    log();
+    let a = fake(Mode::Slow).await;
+    let s = server(vec![("slow1", a.login())], |_| {}).await;
+    let guess = |pass: &str| json!({"username": "root@slow1", "password": pass});
+    let four = || s.hang_up(guess("wrong"), SOON);
+    tokio::join!(four(), four(), four(), four());
+    assert_eq!(a.count(), 4);
+    assert_eq!(audited("login refused", "root@slow1"), 0, "not yet");
+    // Queued behind checks whose clients are gone.
+    let fifth = s.login("root@slow1", PASS);
+    let (r, ()) = tokio::join!(fifth, async {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(a.count(), 4, "asked while the slots were held");
+    });
+    assert_eq!(r.status(), 204);
+    assert_eq!(audited("login refused", "root@slow1"), 4);
+}
+
+#[tokio::test]
+async fn a_client_that_left_gets_no_session_and_no_second_try() {
+    log();
+    let (a, t) = (fake(Mode::Slow).await, fake(Mode::SlowTfa).await);
+    let s = server(vec![("slow2", a.login()), ("pve1", t.login())], |_| {}).await;
+    let body = json!({"username": "root@slow2", "password": PASS});
+    s.hang_up(body, SOON).await;
+    until(|| audited("credentials accepted", "root@slow2") == 1).await;
+    let id = s.challenge().await;
+    let n = audited("login refused", "root@pve1");
+    let body = json!({"challenge": id, "tfa": "totp:000000"});
+    s.hang_up(body, SOON).await;
+    until(|| audited("login refused", "root@pve1") > n).await;
+    assert_eq!(s.tfa(&id, "totp:123456").await.status(), 401, "spent");
+    assert_eq!(audited("login", "root@slow2"), 0, "no session");
+}
+
+#[tokio::test]
+async fn a_local_guess_is_audited_though_the_client_left() {
+    log();
+    let s = server(Vec::new(), |c| {
+        Users::add_user(&c.users_file, "gone1", Role::Admin, "correct horse battery").expect("u");
+    })
+    .await;
+    // In the debug build a hash takes far longer than this.
+    for pass in ["wrong password", "correct horse battery"] {
+        let body = json!({"username": "gone1", "password": pass}).to_string();
+        let mut c = tokio::net::TcpStream::connect(s.base.trim_start_matches("http://"))
+            .await
+            .expect("connect");
+        let req = format!(
+            "POST /api/v1/session HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n\
+             Content-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        c.write_all(req.as_bytes()).await.expect("write");
+        tokio::time::sleep(Duration::from_millis(15)).await;
+    }
+    until(|| audited("login refused", "gone1") == 1).await;
+    until(|| audited("credentials accepted", "gone1") == 1).await;
+}
+
+#[tokio::test]
+async fn a_full_queue_delays_a_known_and_an_unknown_name_alike() {
+    let mut took = Vec::new();
+    for name in ["root@pve1", "root@nope"] {
+        let a = fake(Mode::Plain).await;
+        let s = server(vec![("pve1", a.login())], |c| {
+            c.pve_floor = Duration::from_millis(800);
+        })
+        .await;
+        let guess = || s.login(name, "wrong");
+        let fifth = async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let t = Instant::now();
+            assert_eq!(guess().await.status(), 401);
+            t.elapsed()
+        };
+        let (.., d) = tokio::join!(guess(), guess(), guess(), guess(), fifth);
+        // What is left of the first four's floor, then all of its own.
+        assert!(d >= Duration::from_millis(1250), "{d:?}");
+        took.push(d);
+    }
+    let apart = took[0].abs_diff(took[1]);
+    assert!(apart < Duration::from_millis(250), "{took:?}");
+}
+
 #[tokio::test]
 async fn nothing_secret_is_logged() {
-    let log = Log::default();
-    let sink = log.clone();
-    let sub = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
-        .with_ansi(false)
-        .with_writer(move || sink.clone())
-        .finish();
-    tracing::subscriber::set_global_default(sub).expect("only here");
+    log();
     let (a, t, o) = (
         fake(Mode::Plain).await,
         fake(Mode::Tfa).await,
@@ -431,7 +566,7 @@ async fn nothing_secret_is_logged() {
     s.login("root@hunter2-typed-here", "wrong-pass-value").await;
     let id = s.challenge().await;
     s.tfa(&id, "totp:123456").await;
-    let text = String::from_utf8_lossy(&log.0.lock().expect("lock")).to_string();
+    let text = String::from_utf8_lossy(&log().0.lock().expect("lock")).to_string();
     assert!(
         text.contains("root@pve2") && text.contains("login refused"),
         "{text}"
