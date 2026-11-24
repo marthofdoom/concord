@@ -442,6 +442,11 @@ fn render(cmd: &Command, body: Value) -> Result<String, CtlError> {
             if let Some(e) = &r.guest.detail_error {
                 let _ = write!(s, "\ndetail error: {}", sanitize(e));
             }
+            if r.guest.config_restricted {
+                s.push_str(
+                    "\nconfiguration hidden: Proxmox refuses it to read-only tokens when the container sets environment variables.",
+                );
+            }
             if let Some(c) = &r.guest.config {
                 s.push_str("\nconfig:");
                 for (k, v) in c {

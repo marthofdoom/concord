@@ -472,3 +472,87 @@ async fn failed_config_call_keeps_last_known_config() {
         .as_deref()
         .is_some_and(|e| e.contains("config")));
 }
+
+/// One LXC guest 7 whose config call answers `cfg`; status/current answers `st`.
+async fn lxc_with(conf: Result<Value, PveError>, st: Result<Value, PveError>, kind: &str) -> Guest {
+    let other = if kind == "lxc" { "qemu" } else { "lxc" };
+    let m = base(nodes_json(&[("n1", "online")]))
+        .on(Method::Get, &format!("/nodes/n1/{other}"), json!([]))
+        .on(
+            Method::Get,
+            &format!("/nodes/n1/{kind}"),
+            json!([{"vmid":7,"status":"running"}]),
+        )
+        .on_result(Method::Get, &format!("/nodes/n1/{kind}/7/config"), conf)
+        .on_result(
+            Method::Get,
+            &format!("/nodes/n1/{kind}/7/status/current"),
+            st,
+        );
+    let (mut p, h) = Poller::new(vec![("a".into(), arc(m))], cfg());
+    p.run_cycle().await;
+    snap(&h).hosts[0].guests[0].clone()
+}
+
+fn e403(msg: &str) -> PveError {
+    PveError::Http {
+        status: 403,
+        message: msg.into(),
+        errors: None,
+    }
+}
+
+const ENV_403: &str = "Permission check failed (/vms/7, VM.Config.Options)";
+
+fn ok_status() -> Result<Value, PveError> {
+    Ok(json!({"status":"running"}))
+}
+
+#[tokio::test]
+async fn env_config_403_is_restricted_not_an_error() {
+    let g = lxc_with(Err(e403(ENV_403)), ok_status(), "lxc").await;
+    assert!(g.config_restricted);
+    assert!(g.config.is_none() && g.config_omitted.is_empty());
+    assert!(g.detail_error.is_none());
+}
+
+#[tokio::test]
+async fn other_403s_stay_detail_errors() {
+    for (msg, kind) in [
+        ("Permission check failed (/vms/7, VM.Audit)", "lxc"),
+        (
+            "Permission check failed (/vms/70, VM.Config.Options)",
+            "lxc",
+        ),
+        ("Permission check failed (/vms/8, VM.Config.Options)", "lxc"),
+        (ENV_403, "qemu"),
+    ] {
+        let g = lxc_with(Err(e403(msg)), ok_status(), kind).await;
+        assert!(!g.config_restricted, "{msg} {kind}");
+        assert!(
+            g.detail_error
+                .as_deref()
+                .is_some_and(|e| e.contains("config")),
+            "{msg} {kind}"
+        );
+    }
+    let g = lxc_with(
+        Err(PveError::Http {
+            status: 500,
+            message: ENV_403.into(),
+            errors: None,
+        }),
+        ok_status(),
+        "lxc",
+    )
+    .await;
+    assert!(!g.config_restricted && g.detail_error.is_some());
+}
+
+#[tokio::test]
+async fn restricted_config_still_reports_status_failure() {
+    let g = lxc_with(Err(e403(ENV_403)), Err(PveError::Timeout), "lxc").await;
+    assert!(g.config_restricted);
+    let e = g.detail_error.expect("status error kept");
+    assert!(e.contains("status") && !e.contains("config"));
+}

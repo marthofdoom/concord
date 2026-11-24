@@ -477,6 +477,7 @@ function guestView(host, vmid) {
           ["Memory use", memPct === null ? "n/a" : [h("meter", { min: 0, max: 100, value: memPct, "aria-label": "Memory use" }), " " + memPct + "%"]]]))),
       h("section", { class: "card" }, h("h2", { text: "Configuration" }),
         g.config ? h("dl", { class: "kv cfg" }, cfg.flatMap((k) => [h("dt", { class: "mono", text: k }), h("dd", { class: "mono", text: cfgValue(g.config[k]) })]))
+          : g.config_restricted ? h("p", { class: "muted", text: "Configuration hidden: Proxmox refuses it to read-only tokens when the container sets environment variables." })
           : h("p", { class: "muted", text: "No configuration was captured for this guest." }),
         g.config_omitted && g.config_omitted.length ? h("div", {}, h("h3", { text: "Withheld on purpose (" + g.config_omitted.length + ")" }),
           h("p", { class: "muted small", text: "These keys can hold secrets and are never sent to the console:" }),

@@ -266,7 +266,7 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
 name = "concord-agent"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "concord-core",
@@ -276,7 +276,7 @@ dependencies = [
 
 [[package]]
 name = "concord-config"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "concord-core",
  "concord-pve",
@@ -291,7 +291,7 @@ dependencies = [
 
 [[package]]
 name = "concord-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -301,7 +301,7 @@ dependencies = [
 
 [[package]]
 name = "concord-inventory"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "concord-core",
@@ -315,7 +315,7 @@ dependencies = [
 
 [[package]]
 name = "concord-pve"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -338,7 +338,7 @@ dependencies = [
 
 [[package]]
 name = "concord-server"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "argon2",
@@ -372,7 +372,7 @@ dependencies = [
 
 [[package]]
 name = "concordctl"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "axum",
  "clap",
@@ -870,7 +870,7 @@ dependencies = [
 
 [[package]]
 name = "nestview"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
