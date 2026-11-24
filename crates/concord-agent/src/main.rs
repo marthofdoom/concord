@@ -5,7 +5,7 @@
 //! Scope is deliberately tiny — watch, and start what should be running.
 //! Everything else belongs in the orchestrator.
 //!
-//! Scaffold: the loop shape is here; the PVE calls land per
+//! Not shipped in a release yet: the loop shape is here; the PVE calls land per
 //! `docs/ARCHITECTURE.md`.
 
 use std::time::Duration;

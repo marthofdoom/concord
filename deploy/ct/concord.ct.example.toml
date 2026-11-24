@@ -1,5 +1,6 @@
 # Starting point for deploy.sh --config. Paths here are inside the container.
-# Copy next to your own host list (see ../../concord.example.toml for [[hosts]]).
+# Add your own host list: see concord.example.toml in the repository, at the
+# tag you installed, for the [[hosts]] and secrets file layout.
 
 # Non-loopback, so the service serves HTTPS with a self-signed certificate.
 listen = "0.0.0.0:8010"

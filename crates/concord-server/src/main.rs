@@ -1,8 +1,8 @@
 //! Concord's orchestrator. Runs in a container on a PVE host and serves the
 //! API and web UI that stand in for a cluster's.
 //!
-//! Scaffold: the listener, health surface and read-only inventory are real;
-//! the other subsystems land per `docs/ARCHITECTURE.md`.
+//! The listener, health surface, login and read-only inventory are real; the
+//! other subsystems land per `docs/ARCHITECTURE.md`.
 
 use std::time::Duration;
 

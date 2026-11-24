@@ -8,7 +8,7 @@ resource-driven automatic placement, backup orchestration that repairs itself,
 and update automation for OCI-based guests — by driving Proxmox's own public
 API rather than by joining or reimplementing Corosync.
 
-> **Status:** 0.0.1 — early. One feature works: a live, **read-only inventory**
+> **Status:** 0.1.0 — early. One feature works: a live, **read-only inventory**
 > of several standalone hosts ([below](#what-works-today)). Everything else is
 > designed ([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)) but not built.
 
