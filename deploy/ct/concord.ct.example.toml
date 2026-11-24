@@ -1,4 +1,6 @@
-# Starting point for deploy.sh --config. Paths here are inside the container.
+# Starting point for deploy.sh --config. Not needed when deploy.sh creates the
+# token itself: it then writes these settings and the first host on its own.
+# Paths here are inside the container.
 # Add your own host list: see concord.example.toml in the repository, at the
 # tag you installed, for the [[hosts]] and secrets file layout.
 

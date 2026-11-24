@@ -52,15 +52,45 @@ host certificates by fingerprint, so it does not use a CA bundle.
 
 ## Deploy
 
-Copy the template, `deploy.sh`, a config and a secrets file to the PVE host,
-then, as root there:
+Copy the template and `deploy.sh` to the PVE host, then, as root there:
+
+    bash ./deploy.sh --vmid 9100 --storage local-lvm --bridge vmbr0 \
+        --ip 192.0.2.50/24 --gateway 192.0.2.1 \
+        --template concord-0.1.0-amd64.tar.xz
+
+This also creates what Concord needs to read this host, and writes the config:
+
+- The user `concord-monitor` in the `pve` realm (no password), the role
+  `PVEAuditor` on `/` with propagate, and a token without privilege separation.
+  An existing user is only used if this installer created it (its comment says
+  so), is in no group and has no other permission.
+- The pin: the SHA-256 fingerprint of the certificate `pveproxy` serves, which
+  must also be the certificate file `pveproxy` uses.
+- Before the container is created, the API has to answer through that pin and
+  the token has to have `VM.Audit` on `/`. A token that sees too little would
+  make guests look deleted. The check is repeated from the container's network.
+
+`--name` is the host's name in Concord (default: the short hostname).
+`--api-address` is the address the container uses to reach this host (default:
+the bridge's IPv4 address, if it has exactly one). It must be an IPv4 address or
+a DNS name; the port is 8006. If anything fails, the container, token,
+permission and user this run created are removed.
+
+Each installation has its own token, named after `--install ID` (default
+`concord`) plus a random suffix. Give a second container its own ID, with every
+command that takes one. If the installation already has a token here, the script
+stops; `--rotate-token` creates a new one and removes the old one once the new
+container is healthy (a container still using the old one loses access).
+
+### With your own config
+
 
     bash ./deploy.sh --vmid 9100 --storage local-lvm --bridge vmbr0 \
         --ip 192.0.2.50/24 --gateway 192.0.2.1 \
         --config concord.toml --secrets secrets.toml \
         --template concord-0.1.0-amd64.tar.xz
 
-Use `--ip dhcp` to take an address from DHCP, and `--dry-run` to print every
+Here nothing is created in PVE. Use `--ip dhcp` to take an address from DHCP, and `--dry-run` to print every
 mutating command without running it. Start from `deploy/ct/concord.ct.example.toml`
 (listen on all interfaces, `secrets_file = "secrets.toml"`, `users_file` and
 `state_dir` under `/var/lib/concord`). The secrets file must be mode 0600 on the
@@ -77,6 +107,55 @@ that run.
 "Healthy" means the port is listening inside the container and `/healthz`
 answers from the host (the template's busybox `wget` has no TLS, and the service
 is HTTPS off loopback).
+
+## Add another host
+
+On the host with the container, as root (container 9100 here):
+
+    ssh root@pve2 'bash -s -- --enroll --name pve2 --api-address 192.0.2.12' \
+        < deploy.sh | bash ./deploy.sh --add-host 9100
+
+`--enroll` creates the user, permission and token on pve2 in the same way and
+writes one record to stdout; everything else goes to stderr. The record holds
+the token's secret, so it refuses to write to a terminal without `--force`; do
+not save it. If the record cannot be written, the token is taken back.
+`--add-host` accepts only a record in exactly that form, checks the API,
+certificate and token from inside the container's network namespace, replaces
+the config and the secrets together, restarts Concord and waits for it to be
+healthy. If not, both files are put back. A killed run is put back by the next
+one. Run one host change per container at a time.
+
+If `--add-host` fails, the token on pve2 stays. Remove it there with
+`--unenroll`, or try again with `--rotate-token`. The namespace check uses the
+host's resolver, so prefer an IP address.
+
+Replace a token:
+
+    ssh root@pve2 'bash -s -- --enroll --rotate-token --name pve2 --api-address 192.0.2.12' \
+        < deploy.sh | bash ./deploy.sh --add-host 9100 --replace
+    ssh root@pve2 'bash -s -- --prune-tokens --keep TOKEN' < deploy.sh
+
+The old token stays valid until the second command, so that a failed
+`--add-host` leaves Concord working. The first command prints TOKEN. `--replace`
+is also how to record a renewed certificate.
+
+## Remove a host
+
+    bash ./deploy.sh --remove-host 9100 pve2
+    ssh root@pve2 'bash -s -- --unenroll' < deploy.sh
+
+`--unenroll` deletes this installation's tokens, and the user when it has no
+token left. It does not touch a user it did not create. The nodes of a cluster
+share users, so there `--unenroll` on one is for all of them, and each node
+needs its own `--install` ID.
+
+These commands edit the config line by line, and stop if it uses multi-line
+strings, an inline `hosts` list or another secrets file. `--dry-run` works with
+all of them; it creates nothing, and `--enroll` then writes no record.
+
+How secrets are handled: they are in shell variables, pipes, and mode 0600 files
+on a tmpfs that are removed on every exit but SIGKILL; never in arguments, the
+environment or output other than the record.
 
 ## First run
 
@@ -113,7 +192,8 @@ snapshot afterwards with `pct delsnapshot`.
 
     pct stop 9100 && pct destroy 9100 --purge
 
-This deletes the users file and state with it.
+This deletes the users file and state with it. Then run `--unenroll` on every
+host it tracked.
 
 ## Footprint
 
