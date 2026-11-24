@@ -3,6 +3,9 @@
 # Nothing may print or export what this script holds.
 { set +xva; } 2>/dev/null
 unset SSLKEYLOGFILE
+# A variable the caller exported stays exported when it is assigned, and a local
+# one inherits that. These hold secrets or what comes with them.
+unset -v secret rec rest j out token_id tok old_tokens fp name api_address re BASH_REMATCH
 # Create, upgrade or add hosts to a Concord container. Run as root on a Proxmox
 # host; see usage below and docs/DEPLOY.md.
 #
@@ -20,7 +23,7 @@ HEALTH_DEADLINE=${CONCORD_HEALTH_DEADLINE:-90}
 vmid= storage= bridge= ip= gateway= config= secrets= template= hostname= upgrade=
 rootfs_gb=1 dry=0
 mode=create name= api_address= install=concord keep= rotate=0 replace=0 force=0
-created=0 creating=0 workdir= stage= snap=
+creating=0 workdir= stage= snap=
 
 die() { echo "error: $*" >&2; exit 1; }
 # In --enroll fd 1 is stderr by the time this is used; the record is on fd 3.
@@ -84,7 +87,7 @@ add | remove) tools="pct curl awk perl timeout openssl lxc-info nsenter" ;;
 *) tools="pveum curl perl timeout openssl" ;;
 esac
 if [[ $mode == create && -z $config$secrets ]]; then tools+=" pveum perl timeout openssl ip lxc-info nsenter"; fi
-for t in $tools; do command -v "$t" >/dev/null || die "missing command: $t"; done
+for t in $tools flock; do command -v "$t" >/dev/null || die "missing command: $t"; done
 case $mode in
 create | upgrade) [[ -n $template && -f $template ]] || die "--template FILE (built by build-template.sh) is required" ;;
 add | remove) [[ $vmid =~ ^[1-9][0-9]{2,8}$ ]] || die "bad VMID" ;;
@@ -100,7 +103,6 @@ PVE_USER=concord-monitor
 PVE_REALM=pve
 PVE_USERID=$PVE_USER@$PVE_REALM
 PVE_ROLE=PVEAuditor
-# In two pieces only so that the leak scan does not take it for a token.
 AUTH_SCHEME=PVEAPIToken
 NAME_RE='[A-Za-z0-9][A-Za-z0-9._-]{0,62}'
 IPV4_RE='[0-9]{1,3}(\.[0-9]{1,3}){3}'
@@ -111,6 +113,25 @@ UUID_RE='[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}'
 INSTALL_RE='[A-Za-z][A-Za-z0-9-]{0,39}'
 # Network namespace prefix: empty on this host, nsenter for the container's.
 NS=()
+
+# One run at a time per container (fd 8), and for the PVE users (fd 9). Two locks,
+# as --enroll may feed an --add-host on the same host. Not in /run/lock, where
+# any user may create files. The kernel drops a lock with its last holder.
+LOCK_DIR=${CONCORD_LOCK_DIR:-/run/concord-deploy}
+lock_ct() { # vmid
+	if ((dry)); then return 0; fi
+	{ mkdir -p "$LOCK_DIR" && exec 8>>"$LOCK_DIR/ct-$1" && flock -n 8; } || die "another run is changing container $1 (lock $LOCK_DIR/ct-$1); try again when it is done"
+}
+lock_pve() {
+	if ((dry)); then return 0; fi
+	{ mkdir -p "$LOCK_DIR" && exec 9>>"$LOCK_DIR/pve" && flock -n 9; } || die "another run is changing this host's PVE users (lock $LOCK_DIR/pve); try again when it is done"
+}
+# These may leave something running, a service in the container or a mount
+# helper, which would keep the locks.
+pct() { command pct "$@" 8>&- 9>&-; }
+pveum() { command pveum "$@" 8>&- 9>&-; }
+pvesm() { command pvesm "$@" 8>&- 9>&-; }
+pvesh() { command pvesh "$@" 8>&- 9>&-; }
 
 # Names everything this run creates, so that undoing never takes anything else.
 nonce=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
@@ -305,8 +326,11 @@ undo_pve() {
 		case $state in
 		absent) ;;
 		"concord-deploy user run=$nonce")
-			if names=$(token_names 2>/dev/null) && [[ -z $names ]] &&
-				pveum user delete "$PVE_USERID" </dev/null >/dev/null 2>&1; then
+			if ! names=$(token_names 2>/dev/null); then
+				echo "could not list tokens; kept user $PVE_USERID, check it by hand" >&2
+			elif [[ -n $names ]]; then
+				echo "kept user $PVE_USERID: it has tokens" >&2
+			elif pveum user delete "$PVE_USERID" </dev/null >/dev/null 2>&1; then
 				echo "removed user $PVE_USERID" >&2
 			else
 				echo "could not remove user $PVE_USERID; check it by hand" >&2
@@ -315,8 +339,15 @@ undo_pve() {
 		*) echo "check user $PVE_USERID by hand" >&2 ;;
 		esac
 	elif ((acl_try)); then
-		pveum acl delete / --users "$PVE_USERID" --roles "$PVE_ROLE" </dev/null >/dev/null 2>&1 ||
-			echo "could not remove $PVE_USERID's permission on /; check it by hand" >&2
+		# Without it, a token another run made meanwhile would see no guests.
+		if ! names=$(token_names 2>/dev/null); then
+			echo "could not list tokens; kept $PVE_USERID's permission on /, check it by hand" >&2
+		elif [[ -n $names ]]; then
+			echo "kept $PVE_USERID's permission on /: it has tokens" >&2
+		else
+			pveum acl delete / --users "$PVE_USERID" --roles "$PVE_ROLE" </dev/null >/dev/null 2>&1 ||
+				echo "could not remove $PVE_USERID's permission on /; check it by hand" >&2
+		fi
 	fi
 }
 
@@ -345,8 +376,12 @@ drop_prev() {
 }
 
 read_conf() {
+	local prev
 	verify_concord_ct "$vmid"
-	if pct exec "$vmid" -- sh -c "[ -d $CONF_DIR/.prev ]" </dev/null; then
+	# A word, not a status: a failing pct must not look like "no".
+	prev=$(pct exec "$vmid" -- sh -c "if [ -d $CONF_DIR/.prev ]; then echo yes; else echo no; fi" </dev/null) && [[ $prev == yes || $prev == no ]] ||
+		die "cannot tell whether an earlier change was cut off"
+	if [[ $prev == yes ]]; then
 		say "an earlier change was cut off; restoring the files it replaced"
 		if ((dry)); then echo "DRY-RUN: restore $CONF_DIR/.prev"; else
 			{ restore_conf && drop_prev; } || die "could not restore them"
@@ -359,6 +394,9 @@ read_conf() {
 		die "the config does not use $CONF_DIR/secrets.toml; edit it by hand"
 	# The line editing below would misread these.
 	if grep -Eq "\"\"\"|'''|^[[:space:]]*hosts[[:space:]]*=" "$workdir/c" "$workdir/s"; then
+		die "the config is written in a way this script does not edit; change it by hand"
+	fi
+	if grep -Eq "^[[:space:]]*(\[+[[:space:]]*([\"']?hosts[\"']?[[:space:]]*\.|'hosts')|[\"']name[\"'][[:space:]]*=)" "$workdir/c"; then
 		die "the config is written in a way this script does not edit; change it by hand"
 	fi
 }
@@ -382,10 +420,12 @@ drop_host() { # name
 			if (/^\s*\[/) { flush(); $in = /^\s*\[\[\s*"?hosts"?\s*\]\]/ }
 			if ($in) { push @blk, $_ } else { $out .= $_ } }
 		flush(); $out .= "\n" if $out ne "" && $out !~ /\n\z/; print $out;
+		close STDOUT or exit 9;
 		exit($hit == 0 ? 3 : $hit > 1 ? 4 : $other == 0 ? 5 : 0)' "$1" <"$workdir/c" >"$workdir/c.new" && rc=0 || rc=$?
 	perl -e '
 		my $want = quotemeta shift;
-		while (<STDIN>) { s/\n?\z/\n/; print unless /^\s*(?:$want|"$want"|\x27$want\x27)\s*=/ }' "$1" <"$workdir/s" >"$workdir/s.new" ||
+		while (<STDIN>) { s/\n?\z/\n/; print unless /^\s*(?:$want|"$want"|\x27$want\x27)\s*=/ }
+		close STDOUT or exit 9' "$1" <"$workdir/s" >"$workdir/s.new" ||
 		die "cannot edit the secrets"
 	case $rc in 0 | 3 | 5) return "$rc" ;; 4) die "host $1 is in the config more than once" ;; *) die "cannot edit the config" ;; esac
 }
@@ -400,8 +440,12 @@ apply_conf() {
 	stage=confstaged
 	pct push "$vmid" "$workdir/c.new" "$CONF_DIR/concord.toml.new" --perms 0640 --user 0 --group "$CONCORD_GID" </dev/null || die "push failed; nothing was changed"
 	pct push "$vmid" "$workdir/s.new" "$CONF_DIR/secrets.toml.new" --perms 0600 --user "$CONCORD_GID" --group "$CONCORD_GID" </dev/null || die "push failed; nothing was changed"
-	pct exec "$vmid" -- sh -c "umask 077; cd $CONF_DIR"' && rm -rf .prev.tmp && mkdir .prev.tmp &&
-		cp -p concord.toml secrets.toml .prev.tmp/ && sync && mv .prev.tmp .prev' </dev/null || die "could not keep the old files; nothing was changed"
+	pct exec "$vmid" -- sh -c "umask 077; cd $CONF_DIR"' && { [ ! -e .prev ] || exit 7; } && rm -rf .prev.tmp && mkdir .prev.tmp &&
+		cp -p concord.toml secrets.toml .prev.tmp/ && sync && mv .prev.tmp .prev' </dev/null || {
+		# Not ours to clean up: it is the only copy of what some change replaced.
+		[[ $? != 7 ]] || stage=
+		die "could not keep the old files; nothing was changed"
+	}
 	stage=confswap
 	pct exec "$vmid" -- mv "$CONF_DIR/secrets.toml.new" "$CONF_DIR/secrets.toml" </dev/null || die "swap failed"
 	pct exec "$vmid" -- mv "$CONF_DIR/concord.toml.new" "$CONF_DIR/concord.toml" </dev/null || die "swap failed"
@@ -451,7 +495,7 @@ restore_old() {
 if [[ $mode == upgrade ]]; then
 	workdir=$(mktemp -d)
 else
-	# Will hold secrets: memory only.
+	# Will hold secrets: not on a disk's filesystem (but a tmpfs may be swapped).
 	for d in ${CONCORD_TMPFS:-/run /dev/shm}; do
 		if [[ -w $d && $(stat -f -c %T "$d") == tmpfs ]]; then workdir=$(mktemp -d "$d/concord-deploy.XXXXXXXX"); break; fi
 	done
@@ -490,16 +534,20 @@ cleanup() {
 	# tells whether the container is this run's.
 	local ctconf=
 	if ((rc != 0 && creating)); then ctconf=$(pct config "$vmid" 2>/dev/null); fi
-	if [[ $ctconf == *"concord-deploy-run-$nonce"* ]]; then created=1; fi
-	if ((rc != 0 && created)); then
-		say "failed; destroying container $vmid that this run created"
-		# created is only set once pct create succeeded in this run.
-		if grep -E "^tags:.*(^|[;, ])$TAG([;, ]|$)" >/dev/null < <(printf '%s\n' "$ctconf"); then
+	if ((rc != 0 && creating)); then
+		# The run's mark is in the container until it is done, and nobody else's.
+		if [[ $ctconf == *"concord-deploy-run-$nonce"* ]] && grep -E "^tags:.*(^|[;, ])$TAG([;, ]|$)" >/dev/null < <(printf '%s\n' "$ctconf"); then
+			say "failed; destroying container $vmid that this run created"
 			pct stop "$vmid" >/dev/null 2>&1 || true
 			pct destroy "$vmid" --purge 1 >/dev/null 2>&1 || echo "could not destroy $vmid; remove it by hand" >&2
+		elif [[ -n $ctconf ]]; then
+			echo "container $vmid exists, but without the marks that prove this run created it; not destroying it. Check it: pct config $vmid" >&2
 		else
-			echo "container $vmid lost its $TAG tag; not destroying it" >&2
+			echo "cannot read a container $vmid, so nothing was destroyed. If pct was cut off, something may be left: check pct status $vmid and pvesm list $storage --vmid $vmid" >&2
 		fi
+	fi
+	if ((rc != 0 && !dry)) && [[ $mode == add && -n $token_id ]]; then
+		echo "the token ${token_id#*!} may still be on its host. Concord may be using an older one: read \"If --add-host fails\" in docs/DEPLOY.md before removing any there" >&2
 	fi
 	if ((rc != 0 && !committed)); then undo_pve; fi
 	rm -rf "$workdir"
@@ -594,6 +642,7 @@ enroll)
 	[[ -n $name && -n $api_address ]] || die "--enroll needs --name NAME and --api-address ADDR"
 	# A secret on a screen ends up in scrollback.
 	[[ ! -t 3 ]] || ((force || dry)) || die "stdout is a terminal, and the record holds a secret; pipe it to --add-host (or --force)"
+	lock_pve
 	make_token "$api_address"
 	if ((dry)); then echo "DRY-RUN: no record"; exit 0; fi
 	# Once anything is written the reader may have it, so a signal must not
@@ -603,10 +652,11 @@ enroll)
 		"$name" "$api_address" "$fp" "${token_id#*!}" "$secret" >&3 || die "could not write the record"
 	committed=1
 	say "enrolled; give the record above to --add-host"
-	[[ -z $old_tokens ]] || say "the previous token still works; once the container uses the new one: --prune-tokens --keep ${token_id#*!} --install $install"
+	[[ -z $old_tokens ]] || say "still valid, and still what Concord uses: ${old_tokens//$'\n'/ }. Remove nothing unless --add-host succeeds; it says what to keep"
 	exit 0
 	;;
 prune | unenroll)
+	lock_pve
 	state=$(user_state) || die "cannot list users with pveum"
 	case $state in
 	absent) die "there is no user $PVE_USERID here" ;;
@@ -631,6 +681,8 @@ prune | unenroll)
 	exit 0
 	;;
 add)
+	# Before the record is taken: --enroll undoes a token nobody reads.
+	lock_ct "$vmid"
 	read_record
 	read_conf
 	drop_host "$name" && found=0 || found=$?
@@ -640,10 +692,14 @@ add)
 	host_toml >>"$workdir/c.new"
 	printf '"%s" = "%s"\n' "$name" "$secret" >>"$workdir/s.new"
 	apply_conf
-	((dry)) || say "host $name is configured with token ${token_id#*!}"
+	if ((dry)); then exit 0; fi
+	tok=${token_id#*!}
+	say "host $name is configured with token $tok"
+	((!replace)) || say "older tokens can now be removed on that host: --prune-tokens --keep $tok --install ${tok%-*}"
 	exit 0
 	;;
 remove)
+	lock_ct "$vmid"
 	read_conf
 	drop_host "$name" && found=0 || found=$?
 	((found != 3)) || die "host $name is not configured"
@@ -660,6 +716,7 @@ verify_template
 if [[ -n $upgrade ]]; then
 	vmid=$upgrade
 	[[ $vmid =~ ^[0-9]+$ ]] || die "bad VMID: $vmid"
+	lock_ct "$((10#$vmid))"
 	verify_concord_ct "$vmid"
 	mkdir -p "$workdir/new"
 	tar -xJf "$template" -C "$workdir/new" ./usr/local/bin/concord ./usr/local/bin/concordctl ||
@@ -738,6 +795,8 @@ if ((!generate)); then
 	[[ $perm =~ ^[0-7]00$ ]] || die "secrets file is mode $perm; chmod 600 it first"
 fi
 
+lock_ct "$((10#$vmid))"
+if ((generate)); then lock_pve; fi
 say "checks"
 if pvesh get /cluster/nextid --vmid "$vmid" >/dev/null 2>&1; then :; else die "VMID $vmid is already in use; refusing"; fi
 pct status "$vmid" >/dev/null 2>&1 && die "VMID $vmid already exists; refusing"
@@ -779,10 +838,8 @@ run pct create "$vmid" "$template" \
 	--memory 128 --swap 0 --cores 1 --rootfs "$storage:$rootfs_gb" \
 	--net0 "$net" --onboot 1 --tags "$TAG" --start 0 \
 	--description "concord-deploy-run-$nonce"
-((dry)) || created=1
 
 notes() { printf 'Concord\nIP: %s\nPort: %s\nURL: https://%s:%s/\nManaged by deploy/ct/deploy.sh; upgrade with --upgrade %s.\n' "$1" "$port" "$1" "$port" "$vmid"; }
-if [[ $ip != dhcp ]]; then run pct set "$vmid" --description "$(notes "${ip%/*}")"; fi
 
 # `pct push` needs a running container, so the service comes up without a
 # config first and is restarted once it has one.
@@ -795,6 +852,7 @@ run pct push "$vmid" "$secrets" /etc/concord/secrets.toml --perms 0600 --user "$
 run pct exec "$vmid" -- rc-service concord restart
 if ((dry)); then
 	echo "DRY-RUN: wait up to ${HEALTH_DEADLINE}s for /healthz on port $port"
+	run pct set "$vmid" --description "$(notes "${ip%/*}")"
 	exit 0
 fi
 addr=$(wait_healthy "$vmid" "$port") || die "no healthy /healthz within ${HEALTH_DEADLINE}s (inside logs: pct exec $vmid -- logread)"
@@ -802,8 +860,9 @@ if ((generate)); then
 	say "checking the API from inside the container's network"
 	check_from_ct "$vmid" "$api_address"
 fi
-[[ $ip != dhcp ]] || pct set "$vmid" --description "$(notes "$addr")"
-created=0 creating=0 committed=1
+# Before the description with this run's mark is replaced.
+creating=0 committed=1
+pct set "$vmid" --description "$(notes "$addr")" || echo "warning: could not write the container's Notes" >&2
 if [[ -n $old_tokens ]]; then
 	say "the new token works; removing the previous one"
 	delete_tokens "$old_tokens" "" || echo "warning: the previous token is still there" >&2

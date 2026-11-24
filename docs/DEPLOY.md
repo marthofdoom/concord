@@ -84,14 +84,13 @@ container is healthy (a container still using the old one loses access).
 
 ### With your own config
 
-
     bash ./deploy.sh --vmid 9100 --storage local-lvm --bridge vmbr0 \
         --ip 192.0.2.50/24 --gateway 192.0.2.1 \
         --config concord.toml --secrets secrets.toml \
         --template concord-0.1.0-amd64.tar.xz
 
-Here nothing is created in PVE. Use `--ip dhcp` to take an address from DHCP, and `--dry-run` to print every
-mutating command without running it. Start from `deploy/ct/concord.ct.example.toml`
+Here nothing is created in PVE. Use `--ip dhcp` to take an address from DHCP,
+and `--dry-run` to print every mutating command without running it. Start from `deploy/ct/concord.ct.example.toml`
 (listen on all interfaces, `secrets_file = "secrets.toml"`, `users_file` and
 `state_dir` under `/var/lib/concord`). The secrets file must be mode 0600 on the
 host.
@@ -101,8 +100,10 @@ container (unprivileged, onboot, no extra features, tag `concord`), pushes the
 config (`/etc/concord/concord.toml`, root:concord 0640) and the secrets
 (`/etc/concord/secrets.toml`, concord 0600), writes the IP, port and URL into
 the container's Notes, starts it, and waits up to 90 s (`CONCORD_HEALTH_DEADLINE`)
-for `/healthz`. If the wait fails, it destroys only the container it created in
-that run.
+for `/healthz`. If that fails, it destroys the container, but only one that
+carries this run's mark. If `pct create` was cut off before it wrote the mark,
+the script destroys nothing and says what to check: the container, and volumes
+on the storage.
 
 "Healthy" means the port is listening inside the container and `/healthz`
 answers from the host (the template's busybox `wget` has no TLS, and the service
@@ -123,21 +124,55 @@ not save it. If the record cannot be written, the token is taken back.
 certificate and token from inside the container's network namespace, replaces
 the config and the secrets together, restarts Concord and waits for it to be
 healthy. If not, both files are put back. A killed run is put back by the next
-one. Run one host change per container at a time.
+one.
 
-If `--add-host` fails, the token on pve2 stays. Remove it there with
-`--unenroll`, or try again with `--rotate-token`. The namespace check uses the
-host's resolver, so prefer an IP address.
+### If `--add-host` fails
 
-Replace a token:
+The new token stays on pve2 and nothing uses it. Which token Concord does use
+is on this host (its files are put back on failure):
+
+    pct exec 9100 -- grep -A4 pve2 /etc/concord/concord.toml
+
+The part of `token_id` after `!` is the one to keep. If that shows no pve2, this
+container uses no token there.
+
+- Replacing a token or renewing a certificate: remove the new one with
+  `--prune-tokens --keep OLD` on pve2, OLD being the name from the config. Never
+  use `--unenroll` here: it also deletes the token Concord is using. Or try
+  again with `--rotate-token`.
+- Adding a host for the first time: `--unenroll` on pve2, with the same
+  `--install` ID if you gave one, or try again with `--rotate-token`. Not if
+  another node of pve2's cluster was enrolled under the same ID; then the first
+  point applies, with that node's token.
+
+Do not remove tokens while `/etc/concord/.prev` exists in the container: the
+next run puts those older files back. Run `--add-host` until it succeeds first
+(a run that stops at an error may have restored them already).
+
+The namespace check uses the host's resolver, so prefer an IP address.
+
+### Replace a token
 
     ssh root@pve2 'bash -s -- --enroll --rotate-token --name pve2 --api-address 192.0.2.12' \
         < deploy.sh | bash ./deploy.sh --add-host 9100 --replace
+
+Only if that ended with `host pve2 is configured with token TOKEN`, use the
+TOKEN of that line, not one seen earlier (with `--install ID` if you use one):
+
     ssh root@pve2 'bash -s -- --prune-tokens --keep TOKEN' < deploy.sh
 
-The old token stays valid until the second command, so that a failed
-`--add-host` leaves Concord working. The first command prints TOKEN. `--replace`
-is also how to record a renewed certificate.
+The old token stays valid until then, so that a failed `--add-host` leaves
+Concord working. `--replace` is also how to record a renewed certificate.
+
+### One run at a time
+
+On one host, runs that change the same container, or PVE users and tokens, refuse
+to overlap (locks in `/run/concord-deploy`, gone with the run that holds them).
+The locks do not reach other hosts. The nodes of a cluster share users and
+permissions, so do not enroll, prune or unenroll on two nodes at the same time:
+one run that fails may remove the permission or user just before the other
+creates its token. That run then fails its check or, if it had already passed,
+its token sees no guests; set the permission again or enroll again.
 
 ## Remove a host
 
@@ -154,8 +189,8 @@ strings, an inline `hosts` list or another secrets file. `--dry-run` works with
 all of them; it creates nothing, and `--enroll` then writes no record.
 
 How secrets are handled: they are in shell variables, pipes, and mode 0600 files
-on a tmpfs that are removed on every exit but SIGKILL; never in arguments, the
-environment or output other than the record.
+on a tmpfs (which the kernel may swap) that are removed on every exit but
+SIGKILL; never in arguments, the environment or output other than the record.
 
 ## First run
 

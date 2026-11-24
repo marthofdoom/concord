@@ -11,6 +11,9 @@ U=concord-monitor R=pve
 export A=PVEAPIToken
 CONCORD_TMPFS=$(mktemp -d /dev/shm/concord-test.XXXXXX)
 export CONCORD_TMPFS
+export CONCORD_LOCK_DIR=$T/lock
+PERL=$(command -v perl)
+export PERL
 export UID_="$U@$R"
 FP=$(printf 'AB:%.0s' {1..31})AB
 export FP
@@ -23,6 +26,9 @@ cat >"$T/bin/stub" <<'S'
 cmd=${0##*/}; line="$cmd $*"
 printf '%s\n' "$line" >>"$T/log"
 env >>"$T/env"
+[[ $cmd == @(pct|pveum|pvesm|pvesh) ]] && readlink /proc/self/fd/* | grep -qF "$T/lock" && echo LOCKFD >>"$T/log"
+[[ -n ${OTHER:-} && $line == *$OTHER* ]] && { echo x >"$T/db/tok/other"; echo 0 >"$T/db/tok/other.s"; }
+[[ -n ${FAILLATE:-} && $line == *$FAILLATE* ]] && grep -q 'user token add' "$T/log" && exit 1
 [[ -n ${FAIL:-} && $line == *$FAIL* ]] && exit 1
 D=$T/db C=$T/ct
 sig() { if [[ -n ${SIGNAL:-} && $line == *${SIGNAL#* }* && ! -e $T/signalled ]]; then
@@ -83,7 +89,9 @@ pct)
 	create)
 		# Under 077 a real container's root cannot enter its own root directory.
 		[ "$(umask)" = 0022 ] || { echo "pct create under umask $(umask)" >&2; exit 1; }
+		[[ -z ${FOREIGN:-} ]] || { mkdir "$C"; echo 'description: other' >"$T/desc"; exit 1; }
 		mkdir "$C"; printf 'description: %s\n' "${*: -1}" >"$T/desc" ;;
+	start) [[ -z ${REPLACED:-} ]] || { echo 'description: other' >"$T/desc"; exit 1; } ;;
 	destroy) rm -rf "$C" ;;
 	set) printf 'description: %s\n' "$4" >"$T/desc" ;;
 	pull) case $3 in *concord-ct) echo 'concord-ct 1' >"$4" ;; *) cp "$(map "$3")" "$4" ;; esac ;;
@@ -96,6 +104,7 @@ pct)
 			[[ ! -e $T/badnext ]] || { grep -q pve9 "$C/concord.toml" && { echo down >"$T/svc"; exit 0; }; }
 			echo up >"$T/svc" ;;
 		*proc/net/tcp*) ;;
+		*'[ -d '*'/.prev ]; then'*) if [[ -n ${NOPREV:-} || ! -d $C/.prev ]]; then echo no; else echo yes; fi ;;
 		'sh -c'*) sh -c "$(map "$3")" ;;
 		mv*) mv "$(map "$2")" "$(map "$3")" ;;
 		*) exit 1 ;;
@@ -103,7 +112,13 @@ pct)
 	esac ;;
 esac
 S
-chmod +x "$T/bin/stub"
+cat >"$T/bin/perl" <<'S'
+#!/usr/bin/env bash
+env >>"$T/env"
+if [[ -n ${FULL:-} && $* == *"$FULL"* ]]; then exec "$PERL" "$@" >/dev/full; fi
+exec "$PERL" "$@"
+S
+chmod +x "$T/bin/stub" "$T/bin/perl"
 for c in id uname lxc-info pvesm pvesh ip nsenter timeout openssl curl pveum pct; do ln -s stub "$T/bin/$c"; done
 echo template >"$T/t.tar.xz"
 
@@ -113,13 +128,14 @@ IN=/dev/null
 go() { # arguments of deploy.sh
 	rc=0; : >"$T/log"; : >"$T/env"; rm -f "$T/signalled"
 	PATH="$T/bin:$PATH" CONCORD_HEALTH_DEADLINE=1 \
-		bash -c 'echo $$ >"$T/pid"; exec bash '"${BASHOPT:-}"' "$@"' - "${SCRIPT:-$here/../deploy.sh}" "$@" <"$IN" >"$T/out" 2>"$T/err" || rc=$?
+		bash -c 'echo $$ >"$T/pid"; exec bash '"${BASHOPT:-}"' "$@"' - "${SCRIPT:-$here/../deploy.sh}" "$@" <"$IN" >"$T/out" 2>"$T/err" 7>&- || rc=$?
 	# The one place a secret may appear is the record on enroll's stdout.
 	local s
 	while read -r s; do
 		! grep -qF -- "$s" "$T/log" "$T/env" "$T/err" || fail "secret leaked"
 		[[ " $* " == *" --enroll "* ]] || ! grep -qF -- "$s" "$T/out" || fail "secret on stdout"
 	done <"$T/secrets"
+	! grep -q LOCKFD "$T/log" || fail "a lock was inherited"
 	! grep -q INSECURE "$T/log" || fail "insecure file"
 	# SIGKILL leaves it; nothing can be done there.
 	((rc != 137)) || rm -rf "$CONCORD_TMPFS"/concord-deploy.*
@@ -159,6 +175,16 @@ for s in HUP:129 INT:130 TERM:143 PIPE:141; do
 	done
 done
 
+for v in FOREIGN REPLACED; do
+	host; export "$v=1"; create; unset "$v"
+	[[ $rc != 0 && -d $T/ct && $(toks) == 0 ]] && grep -q 'not destroying it. Check it: pct config 100' "$T/err" || fail "$v"
+	ok "a container not proven ours is left, and named ($v)"
+done
+host; SIGNAL='TERM pct set' create; [[ $rc == 143 && -d $T/ct && $(toks) == 1 ]] || fail "signal while writing the Notes"
+ok "a finished container keeps its token"
+host; before=$(snapshot); FAIL='pct create' create; grep -q 'pvesm list s --vmid 100' "$T/err" || fail "create: no hint"
+refused "a cut-off pct create says what to check"
+
 # ---------------------------------------------------------------- enroll
 host; enroll; [[ $rc == 0 && $(wc -l <"$T/out") == 7 ]] || fail enroll
 grep -Eqx "secret=$SECRET_RE" "$T/out" && [[ $(head -n1 "$T/out") == 'concord-enroll 1' ]] || fail record
@@ -176,6 +202,40 @@ echo user-made >"$T/db/tok/other"; echo 0 >"$T/db/tok/other.s"
 go --unenroll --install second; [[ $rc == 0 && $(toks) == 2 && -e $T/db/user ]] || fail "unenroll second"
 go --unenroll; [[ $rc == 0 && $(toks) == 1 && -e $T/db/user && -e $T/db/tok/other ]] || fail "unenroll keeps a foreign token"
 rm "$T/db/tok/other"*; go --unenroll; [[ $rc == 0 && ! -e $T/db/user ]] || fail "unenroll user"; ok unenroll
+
+# Variables the caller exported do not carry the secret to any command.
+VARS=(secret rec rest j out token_id tok old_tokens fp name api_address re pem)
+for v in "${VARS[@]}"; do export "$v=x"; done
+host; create; [[ $rc == 0 ]] || fail "create, exported variables"
+host; enroll; [[ $rc == 0 ]] || fail "enroll, exported variables"
+record=$(sed '/^secret=/!d;s/.*/secret/' "$T/out"); [[ $record == secret ]] || fail record
+cp "$T/out" "$T/rec1"; cp -r "$T/ct.good" "$T/ct"
+IN=$T/rec1 go --add-host 100; [[ $rc == 0 ]] || fail "add, exported variables"
+IN=$T/rec1 go --add-host 100 --replace; [[ $rc == 0 ]] || fail "replace, exported variables"
+grep -q 'prune-tokens --keep concord-[0-9a-f]* --install concord$' "$T/out" || fail "no prune hint"
+for v in "${VARS[@]}"; do export -n "$v"; done; ok "exported variables"
+
+# Another run's token relies on the permission or user this run set.
+marked() { host; echo 'concord-deploy user run=0123456789abcdef' >"$T/db/user"; }
+marked; OTHER='token add' FAIL='api2/json' enroll
+[[ $rc != 0 && -s $T/db/acl && $(toks) == 1 ]] && grep -q 'kept .*permission' "$T/err" || fail "permission of another token"
+marked; FAIL='api2/json' FAILLATE='token list' enroll
+[[ $rc != 0 && -s $T/db/acl ]] && grep -q "kept .*permission" "$T/err" || fail "tokens not listed: permission"
+host; OTHER='token add' FAIL='api2/json' enroll
+[[ $rc != 0 && -s $T/db/acl && -e $T/db/user && $(toks) == 1 ]] && grep -q 'kept user' "$T/err" || fail "user of another token"
+host; FAIL='api2/json' FAILLATE='token list' enroll
+[[ $rc != 0 && -s $T/db/acl && -e $T/db/user ]] && grep -q 'kept user' "$T/err" || fail "tokens not listed: user"
+ok "undo keeps what another token needs, or may need"
+
+# Runs that overlap are refused, and --dry-run takes no lock.
+hold() { exec 7>>"$T/lock/$1"; flock -n 7 || fail "lock $1 is still held"; }
+release() { exec 7>&-; }
+host; enroll; before=$(snapshot); hold pve
+enroll --rotate-token; refused "enroll during another"; enroll --install x --dry-run; [[ $rc == 0 ]] || fail "dry-run locked"
+go --unenroll; refused "unenroll during another"; go --prune-tokens --keep "$(ls "$T/db/tok" | head -n1)"; refused "prune during another"
+create --install x; refused "create during an enroll"; release; hold ct-100
+create --install x; refused "create during another"
+enroll --install x; [[ $rc == 0 ]] || fail "enroll is not held up by a container"; release; ok "two locks"
 
 # A preexisting marked user without the permission: only the permission is undone.
 host; echo 'concord-deploy user run=0123456789abcdef' >"$T/db/user"; before=$(snapshot)
@@ -210,6 +270,8 @@ add() { IN=$T/rec go --add-host 100 "$@"; }
 ct; add; [[ $rc == 0 ]] || fail add
 grep -c '^\[\[hosts\]\]' "$T/ct/concord.toml" | grep -qx 2 && grep -q '^"pve2" = ' "$T/ct/secrets.toml" || fail "add: content"
 [[ $(ls -A "$T/ct" | wc -l) == 2 ]] || fail "add: leftovers"; ok add
+hold pve; add --replace; [[ $rc == 0 ]] || fail "add is not held up by an enroll"; release; hold ct-100
+before=$(snapshot); add --replace; refused "add during another"; go --remove-host 100 pve1; refused "remove during another"; release
 before=$(snapshot); add; refused "existing host without --replace"
 add --replace; [[ $rc == 0 && $(grep -c pve2 "$T/ct/secrets.toml") == 1 && $(grep -c '"pve2"' "$T/ct/concord.toml") == 1 ]] || fail replace; ok replace
 go --remove-host 100 pve1; [[ $rc == 0 ]] || fail remove
@@ -219,6 +281,9 @@ before=$(snapshot); go --remove-host 100 pve2; refused "removing the last host"
 go --remove-host 100 pve7; refused "removing an unknown host"
 ct; add --dry-run; [[ $rc == 0 && $(snapshot) == "$before" ]] || fail "add dry-run"; ok "add --dry-run"
 SERVED=${FP/AB/CD} add; refused "another certificate"
+# Larger than perl's buffer: then perl itself does not report the failure.
+head -c 20000 /dev/zero | tr '\0' '#' >"$T/pad"; cat "$T/pad" >>"$T/ct/concord.toml"; cat "$T/pad" >>"$T/ct/secrets.toml"; before=$(snapshot)
+for f in 'sub flush' 'print unless'; do FULL=$f add; refused "no space ($f)"; done; ct
 AUDIT=0 add; refused "token sees too little"
 for f in lxc-info 'nsenter -t' 'concord.toml.new --perms' 'secrets.toml.new --perms' 'mkdir .prev' \
 	'mv /etc/concord/secrets' 'mv /etc/concord/concord'; do FAIL=$f add; refused "add: '$f' fails"; done
@@ -227,11 +292,17 @@ for s in HUP:129 INT:130 TERM:143; do for at in 'concord.toml.new --perms' 'mkdi
 	[[ $(cat "$T/svc") == up ]] || fail "service down"
 done; done
 sed 's/name=pve2/name=pve9/' "$T/rec" >"$T/rec9"; touch "$T/badnext"
-IN=$T/rec9 go --add-host 100; refused "unhealthy: both files restored"; grep -q 'running again' "$T/err" || fail misreported
+IN=$T/rec9 go --add-host 100; refused "unhealthy: both files restored"; grep -q 'may still be on its host' "$T/err" || fail "no token hint"; grep -q 'running again' "$T/err" || fail misreported
 FAIL='mv /etc/concord/concord' SIGNAL='KILL mv /etc/concord/secrets' add # cut off outright
 [[ $rc == 137 && -d $T/ct/.prev ]] || fail kill
-rm "$T/badnext"; go --remove-host 100 pve7; refused "recovery after a kill"
-printf 'hosts = []\n' >>"$T/ct/concord.toml"; before=$(snapshot); add; refused "a config it cannot edit"
+rm "$T/badnext"; cp -r "$T/ct" "$T/ct.cut"; cut=$(snapshot)
+FAIL='/.prev ]; then' add; [[ $rc != 0 && $(snapshot) == "$cut" ]] || fail "pct fails: the old files"
+NOPREV=1 add --replace; [[ $rc != 0 ]] && cmp "$T/ct/.prev/concord.toml" "$T/ct.cut/.prev/concord.toml" && [[ ! -d $T/ct/.prev/.prev.tmp ]] || fail "old files overwritten"
+rm -rf "$T/ct"; mv "$T/ct.cut" "$T/ct"; ok "the old files of a cut-off change are kept"
+go --remove-host 100 pve7; refused "recovery after a kill"
+for l in 'hosts = []' '[hosts.x]' '[ "hosts" . x]' "[[ 'hosts' ]]" '"name" = "x"'; do
+	ct; printf '%s\n' "$l" >>"$T/ct/concord.toml"; before=$(snapshot); add; refused "a config it cannot edit: $l"
+done
 
 # ------------------------------------------------------- hostile records
 ct
