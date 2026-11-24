@@ -8,18 +8,20 @@ Everything lives in `deploy/ct/`.
 
 Each GitHub release holds `concord-X-amd64.tar.xz` (the template), its
 `.sha256`, `deploy.sh`, `concord.ct.example.toml`, a static `concordctl`, and
-`SHA256SUMS` over all of them. Download them into one empty directory on the
-PVE host (or copy them there) and check before running anything:
+`SHA256SUMS` over all of them. Download them into one new directory that
+only root can write to (for example `install -d -m 0700 /root/concord-X`), so
+the files cannot change between the check and their use. Check before running
+anything:
 
-    sha256sum -c SHA256SUMS
+    cd /root/concord-X && sha256sum -c SHA256SUMS
 
-Do this as an ordinary user, and run as root only files that check passed:
-`deploy.sh` runs as root and so does everything it calls. A checksum file
-fetched from the same place as the files shows they arrived intact, not that
-they are the ones you meant; compare `SHA256SUMS` against the copy in the
-release page's notes or another channel when that matters. Then continue with
-[Deploy](#deploy), using the files from that directory. The host agent is
-deliberately not shipped yet. Maintainers: [RELEASING.md](RELEASING.md).
+Run as root only files that check passed: `deploy.sh` runs as root and so does
+everything it calls. The checksums come from the same place as the files, so
+they show the download is intact, not who published it. Downloads lose the
+executable bit, so run `bash ./deploy.sh ...` (or `chmod +x deploy.sh` first).
+Then continue with [Deploy](#deploy), using the files from that directory. The
+host agent is deliberately not shipped yet. Maintainers:
+[RELEASING.md](RELEASING.md).
 
 ## Build the template
 
@@ -53,7 +55,7 @@ host certificates by fingerprint, so it does not use a CA bundle.
 Copy the template, `deploy.sh`, a config and a secrets file to the PVE host,
 then, as root there:
 
-    deploy.sh --vmid 9100 --storage local-lvm --bridge vmbr0 \
+    bash ./deploy.sh --vmid 9100 --storage local-lvm --bridge vmbr0 \
         --ip 192.0.2.50/24 --gateway 192.0.2.1 \
         --config concord.toml --secrets secrets.toml \
         --template concord-0.1.0-amd64.tar.xz
@@ -96,7 +98,7 @@ restart.
 
 Build or download the new template, then on the host:
 
-    deploy.sh --upgrade 9100 --template concord-0.1.1-amd64.tar.xz
+    bash ./deploy.sh --upgrade 9100 --template concord-0.1.1-amd64.tar.xz
 
 It checks the `concord` tag and the marker, takes a snapshot while the
 container keeps running (a warning if the storage cannot), stops only the

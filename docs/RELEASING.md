@@ -26,25 +26,31 @@ The host agent (CON-44) is deliberately not shipped yet.
    annotated and is on `main`; runs fmt, clippy, tests, the leak scan and
    `upgrade.sh`; builds; verifies the file set; creates a **draft** release,
    uploads, downloads it again and compares hashes, and only then publishes.
-   Any failure leaves a draft. Delete the draft, fix, and re-tag.
+   A failure before the draft is created leaves nothing. A failure after it
+   leaves an unpublished draft (the log says so); remove it with
+   `gh release delete vX.Y.Z --yes`. If the code had to change, release a new
+   version rather than moving the tag. The workflow also refuses if the tag
+   no longer points at the built commit, or if a release for it already exists.
 
 Run the workflow by hand (Actions, Release, Run workflow) on `main` for a dry
 run that publishes nothing.
 
 ## Without CI
 
+    # keep output outside the repo: check-tag refuses a dirty tree
     git fetch origin main
     scripts/release.sh check-tag vX.Y.Z           # version, annotated, on origin/main
     cargo fmt --all -- --check && cargo clippy --workspace --all-targets --all-features --locked
     cargo test --workspace --locked
     cargo run -q -p concord-pve --locked --features capture --example leakscan
-    deploy/ct/build-template.sh --out out/ct
+    deploy/ct/build-template.sh --out ../concord-out/ct
     deploy/ct/tests/upgrade.sh
-    scripts/release.sh assemble --version X.Y.Z --template-dir out/ct \
-        --concordctl target/x86_64-unknown-linux-musl/release/concordctl --out out/release
-    scripts/release.sh publish vX.Y.Z out/release   # needs an authenticated gh
+    scripts/release.sh assemble --version X.Y.Z --template-dir ../concord-out/ct \
+        --concordctl target/x86_64-unknown-linux-musl/release/concordctl --out ../concord-out/release
+    scripts/release.sh publish vX.Y.Z ../concord-out/release   # needs an authenticated gh
 
 `verify DIR X.Y.Z` re-checks a directory at any time, and `notes X.Y.Z` prints
-the release notes that will be used. The template build is reproducible: the
-same commit gives the same `tar.xz`, so building twice and comparing the
-hashes is a cheap check.
+the release notes that will be used. The template build is deterministic given the same inputs (pinned Alpine
+files, commit time as mtime), but the Rust toolchain tracks `stable` and the
+C compiler and xz differ between machines, so equal hashes across machines or
+days are not guaranteed; compare two builds on one machine.

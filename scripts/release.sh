@@ -29,14 +29,28 @@ expected_files() {
 		concord.ct.example.toml concordctl SHA256SUMS
 }
 
+# The tag must name the very commit being built: a moved tag, a stale checkout
+# or a dirty tree would otherwise ship binaries under the wrong tag.
 check_tag() {
 	local tag=$1 mainref=${2:-origin/main}
 	[[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || die "tag $tag is not vMAJOR.MINOR.PATCH[-suffix]"
 	[[ ${tag#v} == "$(version)" ]] || die "tag $tag does not match workspace version $(version)"
 	# An annotated tag is its own object; a lightweight one points at the commit.
 	[[ $(git -C "$root" cat-file -t "refs/tags/$tag") == tag ]] || die "tag $tag is not annotated"
+	[[ $(git -C "$root" rev-parse "refs/tags/$tag^{commit}") == "$(git -C "$root" rev-parse HEAD)" ]] ||
+		die "tag $tag does not point at the checked-out commit"
+	[[ -z $(git -C "$root" status --porcelain) ]] || die "working tree is not clean"
+	git -C "$root" rev-parse --verify -q "$mainref^{commit}" >/dev/null || die "no such ref: $mainref"
 	git -C "$root" merge-base --is-ancestor "refs/tags/$tag^{commit}" "$mainref" ||
 		die "tag $tag is not on $mainref"
+}
+
+# The tag as the remote has it now, compared with the commit that was built.
+check_remote_tag() {
+	local tag=$1 got
+	got=$(git -C "$root" ls-remote origin "refs/tags/$tag^{}" | cut -f1)
+	[[ -n $got && $got == "$(git -C "$root" rev-parse HEAD)" ]] ||
+		die "remote tag $tag is gone or no longer points at the built commit"
 }
 
 notes() {
@@ -95,26 +109,42 @@ verify() {
 	echo "verified $d for $v"
 }
 
+tmp= created=
+publish_exit() {
+	local rc=$?
+	rm -rf -- "${tmp:-}"
+	if [[ $rc -ne 0 && -n $created ]]; then
+		echo "the release $created is left as an unpublished DRAFT; remove it with: gh release delete $created --yes" >&2
+		echo "(the tag stays; if the code changed, release a new version instead of re-tagging)" >&2
+	fi
+}
+
 publish() {
-	local tag=$1 d=$2 v tmp pre=()
+	local tag=$1 d=$2 v pre=() f
 	v=${tag#v}
 	verify "$d" "$v"
 	[[ $v == *-* ]] && pre=(--prerelease)
 	tmp=$(mktemp -d)
-	trap 'rm -rf -- "$tmp"' EXIT
+	trap publish_exit EXIT
 	notes "$v" >"$tmp/notes.md"
 	mkdir "$tmp/dl"
+	# Upload resolves a release by tag, published or draft; refuse if any exists.
+	gh api --paginate "repos/{owner}/{repo}/releases" --jq '.[].tag_name' >"$tmp/existing"
+	! grep -qxF -- "$tag" "$tmp/existing" || die "a release for $tag already exists (draft or published); delete it first"
+	check_remote_tag "$tag"
 	# --verify-tag: never let gh create the tag; it must already exist.
 	gh release create "$tag" --draft --verify-tag --title "Concord $v" \
 		--notes-file "$tmp/notes.md" ${pre[@]+"${pre[@]}"}
+	created=$tag
 	(cd "$d" && gh release upload "$tag" -- *)
 	gh release download "$tag" --dir "$tmp/dl"
 	verify "$tmp/dl" "$v"
-	local f
 	while read -r f; do
-		cmp -s -- "$d/$f" "$tmp/dl/$f" || die "$f differs after the round trip; the release stays a draft"
+		cmp -s -- "$d/$f" "$tmp/dl/$f" || die "$f differs after the round trip"
 	done < <(expected_files "$v")
-	gh release edit "$tag" --draft=false
+	check_remote_tag "$tag"
+	gh release edit "$tag" --draft=false --verify-tag
+	created=
 	echo "published $tag"
 }
 
@@ -124,7 +154,9 @@ case $cmd in
 version) version ;;
 check-tag)
 	[[ $# -ge 1 ]] || die "usage: check-tag TAG [--main-ref REF]"
-	check_tag "$1" "${3:-origin/main}" ;;
+	if [[ $# -eq 1 ]]; then check_tag "$1"
+	elif [[ $# -eq 3 && $2 == --main-ref ]]; then check_tag "$1" "$3"
+	else die "usage: check-tag TAG [--main-ref REF]"; fi ;;
 notes) [[ $# -eq 1 ]] || die "usage: notes VERSION"; notes "$1" ;;
 assemble) assemble "$@" ;;
 verify) [[ $# -eq 2 ]] || die "usage: verify DIR VERSION"; verify "$1" "$2" ;;

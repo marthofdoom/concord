@@ -7,7 +7,7 @@ First release.
 - Read-only inventory of several standalone Proxmox VE hosts: nodes, guests and
   storage in one view, polled through each host's own API.
 - Web console served over HTTPS.
-- Login with local users, API tokens, and `root@HOST` with two-factor.
+- Login with local users and API tokens.
 - LXC template for a Proxmox host, with `deploy.sh` to create a container and to
   upgrade it, rolling back to the previous binaries if the new ones are unhealthy.
 - `concordctl`, the command-line client, shipped as a static binary.
