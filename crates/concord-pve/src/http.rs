@@ -43,68 +43,78 @@ impl HttpPveClient {
         fingerprint: Fingerprint,
         timeout: Duration,
     ) -> Result<Self, PveError> {
-        if base_url.scheme() != "https" {
-            return Err(PveError::InvalidRequest(
-                "PVE base URL must be https".into(),
-            ));
-        }
-        if base_url.host_str().is_none() {
-            return Err(PveError::InvalidRequest("PVE base URL has no host".into()));
-        }
-        if base_url.path() != "/"
-            || base_url.query().is_some()
-            || base_url.fragment().is_some()
-            || !base_url.username().is_empty()
-            || base_url.password().is_some()
-        {
-            return Err(PveError::InvalidRequest(
-                "PVE base URL must be a bare origin such as https://host:8006".into(),
-            ));
-        }
         let auth = token.header_value()?;
-
-        let tls = pinned_client_config(fingerprint)?;
-
-        let client = Client::builder()
-            .use_preconfigured_tls(tls)
-            .https_only(true)
-            .timeout(timeout)
-            // A redirect could carry the Authorization header to another host.
-            .redirect(reqwest::redirect::Policy::none())
-            // PVE hosts are addressed directly; an ambient proxy would see the
-            // token.
-            .no_proxy()
-            .build()
-            .map_err(|e| {
-                PveError::InvalidRequest(format!("HTTP client setup failed: {}", e.without_url()))
-            })?;
-
-        let origin = base_url.origin().ascii_serialization();
+        let (base, client) = pinned_client(&base_url, fingerprint, timeout)?;
         Ok(HttpPveClient {
-            base: format!("{origin}/api2/json"),
+            base,
             client,
             auth,
             pin: fingerprint,
         })
     }
+}
 
-    fn map_transport(&self, e: reqwest::Error) -> PveError {
-        if let Some(m) = find_pin_mismatch(&e) {
-            return PveError::FingerprintMismatch {
-                expected: m.expected.to_string(),
-                actual: m.actual.to_string(),
-            };
-        }
-        // The URL may carry query parameters; none of it belongs in an error.
-        let e = e.without_url();
-        if e.is_timeout() {
-            PveError::Timeout
-        } else if e.is_connect() {
-            PveError::Connect(error_chain(&e))
-        } else {
-            PveError::Transport(error_chain(&e))
-        }
+pub(crate) fn map_transport(e: reqwest::Error) -> PveError {
+    if let Some(m) = find_pin_mismatch(&e) {
+        return PveError::FingerprintMismatch {
+            expected: m.expected.to_string(),
+            actual: m.actual.to_string(),
+        };
     }
+    // The URL may carry query parameters; none of it belongs in an error.
+    let e = e.without_url();
+    if e.is_timeout() {
+        PveError::Timeout
+    } else if e.is_connect() {
+        PveError::Connect(error_chain(&e))
+    } else {
+        PveError::Transport(error_chain(&e))
+    }
+}
+
+/// A client that speaks to one pinned origin and nowhere else, and the base of
+/// its API.
+pub(crate) fn pinned_client(
+    base_url: &Url,
+    fingerprint: Fingerprint,
+    timeout: Duration,
+) -> Result<(String, Client), PveError> {
+    if base_url.scheme() != "https" {
+        return Err(PveError::InvalidRequest(
+            "PVE base URL must be https".into(),
+        ));
+    }
+    if base_url.host_str().is_none() {
+        return Err(PveError::InvalidRequest("PVE base URL has no host".into()));
+    }
+    if base_url.path() != "/"
+        || base_url.query().is_some()
+        || base_url.fragment().is_some()
+        || !base_url.username().is_empty()
+        || base_url.password().is_some()
+    {
+        return Err(PveError::InvalidRequest(
+            "PVE base URL must be a bare origin such as https://host:8006".into(),
+        ));
+    }
+    let tls = pinned_client_config(fingerprint)?;
+
+    let client = Client::builder()
+        .use_preconfigured_tls(tls)
+        .https_only(true)
+        .timeout(timeout)
+        // A redirect could carry the credential to another host.
+        .redirect(reqwest::redirect::Policy::none())
+        // PVE hosts are addressed directly; an ambient proxy would see the
+        // credential.
+        .no_proxy()
+        .build()
+        .map_err(|e| {
+            PveError::InvalidRequest(format!("HTTP client setup failed: {}", e.without_url()))
+        })?;
+
+    let origin = base_url.origin().ascii_serialization();
+    Ok((format!("{origin}/api2/json"), client))
 }
 
 /// `path` is joined onto the base as text and re-parsed as a URL, so anything
@@ -174,7 +184,7 @@ impl PveApi for HttpPveClient {
             .header(ACCEPT, "application/json")
             .send()
             .await
-            .map_err(|e| self.map_transport(e))?;
+            .map_err(map_transport)?;
         let status = resp.status();
         // pveproxy sends some errors (401s, observed) with an empty body and the
         // text only in a custom reason phrase. hyper records the phrase only
@@ -185,7 +195,7 @@ impl PveApi for HttpPveClient {
             .and_then(|r| std::str::from_utf8(r.as_bytes()).ok())
             .or_else(|| status.canonical_reason())
             .map(str::to_owned);
-        let body = resp.bytes().await.map_err(|e| self.map_transport(e))?;
+        let body = resp.bytes().await.map_err(map_transport)?;
         parse_envelope(status.as_u16(), reason.as_deref(), &body)
     }
 }

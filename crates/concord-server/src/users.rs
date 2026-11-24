@@ -170,6 +170,30 @@ fn check_name(name: &str) -> Result<(), UsersError> {
     }
 }
 
+/// `root@...` names a PVE host's root. Such a name already in the file keeps
+/// working, and is then never sent to a host; new ones are refused.
+pub(crate) fn is_reserved(name: &str) -> bool {
+    name.get(..5)
+        .is_some_and(|p| p.eq_ignore_ascii_case("root@"))
+}
+
+fn check_new_name(name: &str) -> Result<(), UsersError> {
+    check_name(name)?;
+    if is_reserved(name) {
+        return Err(refused(
+            "names starting with root@ are reserved for signing in as a PVE host's root",
+        ));
+    }
+    Ok(())
+}
+
+/// The nearest directory on the way to `dir` that is there.
+fn existing(dir: &Path) -> &Path {
+    dir.ancestors()
+        .find(|d| d.symlink_metadata().is_ok())
+        .unwrap_or(Path::new("."))
+}
+
 impl Users {
     /// A file that does not exist has no users; any other fault is an error.
     pub fn load(path: &Path) -> Result<Users, UsersError> {
@@ -243,6 +267,11 @@ impl Users {
         };
         if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
             use std::os::unix::fs::DirBuilderExt;
+            // Before anything is created: what root makes in a directory the
+            // service account controls is already the harm.
+            if let Some(why) = unsafe_for_root(&existing(dir).join("users")) {
+                return Err(refused(why));
+            }
             std::fs::DirBuilder::new()
                 .recursive(true)
                 .mode(0o700)
@@ -264,7 +293,7 @@ impl Users {
     }
 
     pub fn add_user(path: &Path, name: &str, role: Role, password: &str) -> Result<(), UsersError> {
-        check_name(name)?;
+        check_new_name(name)?;
         if password.chars().count() < MIN_PASSWORD || password.len() > MAX_PASSWORD {
             return Err(refused(format!(
                 "a password must be {MIN_PASSWORD} characters to {MAX_PASSWORD} bytes long"
@@ -301,7 +330,7 @@ impl Users {
 
     /// The new token's secret, which is stored nowhere.
     pub fn add_token(path: &Path, name: &str, role: Role) -> Result<Zeroizing<String>, UsersError> {
-        check_name(name)?;
+        check_new_name(name)?;
         let secret = Zeroizing::new(format!("{TOKEN_PREFIX}{}", hex(&random::<32>()?[..])));
         let sha256 = hex(&digest(&secret));
         Users::edit(path, |f| {
@@ -344,6 +373,8 @@ struct Stamp(u64, u64, u64, i64, i64);
 /// The users file, followed as it changes.
 pub(crate) struct Store {
     path: PathBuf,
+    /// Whether there is a way in without a user.
+    pve_login: bool,
     seen: Mutex<Seen>,
 }
 
@@ -384,9 +415,10 @@ impl Loaded {
 }
 
 impl Store {
-    pub(crate) fn new(path: PathBuf) -> Self {
+    pub(crate) fn new(path: PathBuf, pve_login: bool) -> Self {
         Store {
             path,
+            pve_login,
             seen: Mutex::default(),
         }
     }
@@ -429,10 +461,17 @@ impl Store {
         }
         if users.is_empty() && (stamp.is_some() || !quiet) {
             seen.logged = Some(Instant::now());
-            tracing::warn!(
-                "no API users; add one with `concord user add NAME --role admin`. \
-                 Until then every API request is refused"
-            );
+            if self.pve_login {
+                tracing::info!(
+                    "no local API users; sign-in is possible as root@HOST, with the root \
+                     password of a configured PVE host"
+                );
+            } else {
+                tracing::warn!(
+                    "no API users; add one with `concord user add NAME --role admin`. \
+                     Until then every API request is refused"
+                );
+            }
         }
         let loaded = Arc::new(Loaded::new(users));
         // Without a stamp there is nothing to tell a later change by.
@@ -452,7 +491,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let f = d.path().join("users.toml");
         let secret = Users::add_token(&f, "t", Role::Admin).unwrap();
-        let store = Store::new(f.clone());
+        let store = Store::new(f.clone(), false);
         assert!(store.current().unwrap().token(&secret).is_some());
         // A failed load, then exactly the same file again: same stamp.
         let aside = d.path().join("aside");
@@ -482,5 +521,25 @@ mod tests {
         assert!(Users::add_token(&f, "user1@pve", Role::Admin).is_err());
         let mode = std::fs::metadata(d.path().join("sub")).unwrap().mode();
         assert_eq!(mode & 0o777, 0o700, "created with the file");
+    }
+
+    #[test]
+    fn root_at_is_reserved_for_new_names() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("users.toml");
+        for n in ["root@pve1", "ROOT@pve1", "root@"] {
+            assert!(Users::add_user(&f, n, Role::Admin, "correct horse battery").is_err());
+            assert!(Users::add_token(&f, n, Role::Admin).is_err());
+        }
+        assert!(!f.exists());
+        Users::add_user(&f, "rooty@pve1", Role::Admin, "correct horse battery").unwrap();
+    }
+
+    #[test]
+    fn the_directory_checked_before_creating_is_the_one_there() {
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(existing(&d.path().join("a/b")), d.path());
+        assert_eq!(existing(d.path()), d.path());
+        assert_eq!(existing(Path::new("no-such-dir-here")), Path::new("."));
     }
 }

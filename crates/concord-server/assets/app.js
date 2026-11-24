@@ -1,8 +1,8 @@
 // Concord console. Every byte from the server is untrusted: it only ever
 // reaches the page through textContent / createElement, never as markup.
 import {
-  attention, buildQuery, countBy, distinct, filterGuests, fmtAgo, fmtBytes, fmtDuration,
-  freshness, guestBadge, guestResult, signOutOutcome, guestHref, guestRows, hostBadge, parseHash, pct, sortGuests,
+  attention, buildQuery, countBy, distinct, epochs, estateOutcome, filterGuests, fmtAgo, fmtBytes, fmtDuration,
+  freshness, guestBadge, guestResult, signOutOutcome, guestHref, guestRows, hostBadge, loginOutcome, parseHash, pct, sortGuests, tfaAnswer,
 } from "/ui/logic.js";
 
 const REFRESH_MS = 5000;
@@ -15,9 +15,11 @@ const S = {
   fetchOk: true,       // did the latest fetch reach the controller
   waiting: false,      // 503: first cycle not done
   error: null,         // text for the latest failure
+  notice: null,        // text that stays until acted on
   guest: null,         // {key, data, error, status}
   view: null,          // {key, update()} for the mounted route
 };
+const sessions = epochs();
 const now = () => Math.floor(Date.now() / 1000);
 
 // ---- DOM helpers (text only) ----
@@ -43,6 +45,8 @@ function replace(el, ...kids) { el.replaceChildren(...kids.flat().filter((k) => 
 
 // ---- API ----
 const API_TIMEOUT_MS = 8000;
+// A PVE host that does not answer is waited for, and its queue before that.
+const LOGIN_TIMEOUT_MS = 25000;
 class Unauthorized extends Error {}
 async function api(path, opts = {}) {
   const method = opts.method || "GET";
@@ -51,14 +55,17 @@ async function api(path, opts = {}) {
   if (opts.body) headers["Content-Type"] = "application/json";
   // Without a deadline a connection that hangs, rather than fails, would leave
   // the last picture on screen looking live.
-  const signal = AbortSignal.timeout(API_TIMEOUT_MS);
+  const current = sessions.start();
+  const signal = AbortSignal.timeout(opts.timeout || API_TIMEOUT_MS);
   const r = await fetch(path, { method, headers, body: opts.body, credentials: "same-origin", cache: "no-store", signal });
-  if (r.status === 401 && !opts.allow401) { signedOut(); throw new Unauthorized(); }
+  if (r.status === 401 && !opts.allow401) { if (current()) signedOut(); throw new Unauthorized(); }
   return r;
 }
 async function json(r) { try { return await r.json(); } catch { return null; } }
 
 function signedOut() {
+  sessions.end();
+  inflight = false; S.notice = null;
   S.user = null;
   S.view = null;
   // The next login may be another user or a restarted controller: the old
@@ -73,34 +80,41 @@ let inflight = false;
 async function refresh() {
   if (!S.user || inflight) return;
   inflight = true;
+  const current = sessions.start();
   try {
     const r = await api("/api/v1/estate");
-    if (r.status === 503) { S.waiting = true; S.estate = null; S.fetchOk = true; S.error = null; }
-    else if (r.ok) {
-      const body = await json(r);
-      if (body && Array.isArray(body.hosts)) { S.estate = body; S.fetchedAt = now(); S.waiting = false; S.fetchOk = true; S.error = null; }
-      else { S.fetchOk = false; S.error = "unexpected response from the controller"; }
-    } else { S.fetchOk = false; S.error = "controller answered HTTP " + r.status; }
-    await refreshGuest();
+    const body = await json(r);
+    if (!current()) return;
+    const o = estateOutcome(r.status, body);
+    S.waiting = o.kind === "starting";
+    S.fetchOk = o.kind !== "failed";
+    S.error = o.error || null;
+    if (o.kind === "starting") S.estate = null;
+    if (o.kind === "ok") { S.estate = body; S.fetchedAt = now(); }
+    await refreshGuest(current);
   } catch (e) {
-    if (e instanceof Unauthorized) return;
+    if (e instanceof Unauthorized || !current()) return;
+    S.waiting = false;
     S.fetchOk = false;
     S.error = "no answer from the controller";
   } finally {
-    inflight = false;
+    // A later sign-in's refresh is not this one's to unmark.
+    if (current()) inflight = false;
   }
-  paint();
+  if (current()) paint();
 }
 
-async function refreshGuest() {
+async function refreshGuest(current) {
   const { path } = parseHash(location.hash);
   if (path[0] !== "guests" || path.length < 3) { S.guest = null; return; }
   const key = path[1] + "/" + path[2];
   try {
     const r = await api(`/api/v1/guests/${encodeURIComponent(path[1])}/${encodeURIComponent(path[2])}`);
-    S.guest = { key, ...guestResult(r.status, await json(r)) };
+    const body = await json(r);
+    if (!current()) return;
+    S.guest = { key, ...guestResult(r.status, body) };
   } catch (e) {
-    if (e instanceof Unauthorized) throw e;
+    if (e instanceof Unauthorized || !current()) throw e;
     // Drop the old detail: the view falls back to the fresh estate copy and
     // says the detail could not be loaded, rather than showing it as current.
     S.guest = { key, ...guestResult(0, null) };
@@ -138,23 +152,65 @@ function renderLogin() {
   const user = h("input", { id: "u", name: "username", autocomplete: "username", required: true, autofocus: true });
   const pw = h("input", { id: "p", name: "password", type: "password", autocomplete: "current-password", required: true });
   const btn = h("button", { type: "submit", text: "Sign in" });
-  const form = h("form", { class: "login card", onsubmit: async (e) => {
+  const submit = async (e) => {
     e.preventDefault();
     btn.disabled = true; err.textContent = "";
     try {
-      const r = await api("/api/v1/session", { method: "POST", allow401: true, body: JSON.stringify({ username: user.value, password: pw.value }) });
-      if (r.status === 204) { await loadSession(); return; }
-      err.textContent = r.status === 401 ? "Wrong username or password." : r.status === 429 ? "Too many attempts. Wait a little, then try again." : "Sign-in failed (HTTP " + r.status + ").";
+      const o = await postSession({ username: user.value, password: pw.value });
+      if (o.kind === "in") { pw.value = ""; await loadSession(); return; }
+      if (o.kind === "tfa") { pw.value = ""; renderTfa(o); return; }
+      err.textContent = o.error;
     } catch { err.textContent = "Cannot reach the Concord controller."; }
     pw.value = ""; btn.disabled = false;
-  } },
+  };
+  const form = h("form", { class: "login card", onsubmit: submit },
     h("h1", { text: "Concord" }),
     h("p", { class: "muted", text: "Sign in to the estate console." }),
     h("label", { for: "u", text: "Username" }), user,
     h("label", { for: "p", text: "Password" }), pw,
-    err, btn);
+    err, btn,
+    h("p", { class: "muted small", text: "A Concord user, or root@host for a tracked Proxmox VE host, with that host's root password (if enabled)." }));
   replace(root, h("main", { class: "login-wrap", id: "main" }, form));
   user.focus();
+}
+
+async function postSession(body) {
+  const r = await api("/api/v1/session", { method: "POST", allow401: true, timeout: LOGIN_TIMEOUT_MS, body: JSON.stringify(body) });
+  return loginOutcome(r.status, r.status === 204 ? null : await json(r));
+}
+
+// The challenge lives here only, and is good for one answer.
+function renderTfa({ challenge, kinds }) {
+  const label = { totp: "Code from your authenticator", recovery: "Recovery key" };
+  const err = h("p", { class: "err", role: "alert" });
+  const kind = h("select", { id: "k" }, kinds.map((k) => h("option", { value: k, text: label[k] })));
+  const code = h("input", { id: "c", name: "code", autocomplete: "one-time-code", required: true });
+  const codeLabel = h("label", { for: "c" });
+  const btn = h("button", { type: "submit", text: "Continue" });
+  const again = h("button", { type: "button", class: "quiet", text: "Start over", onclick: renderLogin });
+  const show = () => { codeLabel.textContent = label[kind.value]; code.inputMode = kind.value === "totp" ? "numeric" : "text"; code.value = ""; };
+  kind.addEventListener("change", show);
+  const submit = async (e) => {
+    e.preventDefault();
+    const tfa = tfaAnswer(kind.value, code.value);
+    if (!tfa) { err.textContent = "That does not look like a " + (kind.value === "totp" ? "code." : "recovery key."); return; }
+    btn.disabled = true; again.disabled = true; err.textContent = "";
+    let why;
+    try {
+      const o = await postSession({ challenge, tfa });
+      if (o.kind === "in") { code.value = ""; await loadSession(); return; }
+      why = o.error === "Wrong username or password." || !o.error ? "Second factor refused." : o.error;
+    } catch { why = "Cannot reach the Concord controller."; }
+    renderLogin();
+    const el = root.querySelector(".err"); if (el) el.textContent = why + " Sign in again.";
+  };
+  replace(root, h("main", { class: "login-wrap", id: "main" }, h("form", { class: "login card", onsubmit: submit },
+    h("h1", { text: "Concord" }),
+    h("p", { class: "muted", text: "This account has a second factor." }),
+    kinds.length > 1 ? [h("label", { for: "k", text: "Kind" }), kind] : null,
+    codeLabel, code, err, btn, again)));
+  show();
+  code.focus();
 }
 
 async function loadSession() {
@@ -173,8 +229,8 @@ async function signOut() {
   try { status = (await api("/api/v1/session", { method: "DELETE", allow401: true })).status; } catch { /* reported below */ }
   if (signOutOutcome(status) === "failed") {
     // The session cookie is still live; showing the login page would lie.
-    if (els.banner) replace(els.banner, h("div", { class: "banner bad" }, h("strong", { text: "\u2715 Sign-out failed. " }),
-      "You are still signed in" + (status ? " (HTTP " + status + ")" : " (no answer from the controller)") + ". Try again."));
+    S.notice = "You are still signed in" + (status ? " (HTTP " + status + ")" : " (no answer from the controller)") + ". Try again.";
+    paint();
     return;
   }
   signedOut();
@@ -186,6 +242,7 @@ function paint() {
   const t = now();
   const fr = S.estate ? freshness({ fetchOk: S.fetchOk, takenAt: S.estate.taken_at, nowSecs: t, waiting: S.waiting }) : (S.fetchOk ? "live" : "unreachable");
   const notes = [];
+  if (S.notice) notes.push(h("div", { class: "banner bad" }, h("strong", { text: "✕ Sign-out failed. " }), S.notice));
   if (fr === "unreachable") {
     notes.push(h("div", { class: "banner bad" }, h("strong", { text: "✕ Controller unreachable. " }),
       S.error + ". ", S.estate ? "The data below is from " + fmtAgo(S.fetchedAt, t) + " and is not current." : "Nothing to show yet."));

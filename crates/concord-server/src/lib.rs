@@ -29,7 +29,7 @@ use concord_inventory::{Conflict, EstateSnapshot, Guest, HostSummary, InventoryH
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-pub use auth::{Auth, AuthConfig, Identity};
+pub use auth::{Auth, AuthConfig, Identity, Source};
 pub use host_guard::guard_host;
 
 /// Everything a handler may read. Handlers see the inventory snapshot, never a
@@ -124,12 +124,18 @@ fn error(status: StatusCode, msg: impl Into<String>) -> Response {
     (status, Json(json!({ "error": msg.into() }))).into_response()
 }
 
+/// With a word for programs to tell one 503 from another by.
+fn coded(status: StatusCode, code: &'static str, msg: &'static str) -> Response {
+    (status, Json(json!({ "error": msg, "code": code }))).into_response()
+}
+
 /// 503 until the first cycle finishes: an empty estate would be a claim, not
 /// an absence of data. The error is boxed to keep `Result` small.
 fn current(state: &AppState) -> Result<std::sync::Arc<EstateSnapshot>, Box<Response>> {
     state.inventory.current().ok_or_else(|| {
-        Box::new(error(
+        Box::new(coded(
             StatusCode::SERVICE_UNAVAILABLE,
+            "starting",
             "inventory has not completed its first cycle",
         ))
     })

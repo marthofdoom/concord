@@ -176,3 +176,48 @@ export function guestResult(status, body) {
   if (status >= 200 && status < 300 && body) return { status, data: body, error: null };
   return { status, data: null, error: (body && body.error) || (status ? "HTTP " + status : "no answer from the controller") };
 }
+
+// What an estate answer means. Only the server's own word for it is "starting":
+// other 503s are faults.
+export function estateOutcome(status, body) {
+  if (status === 503 && body && body.code === "starting") return { kind: "starting" };
+  if (status >= 200 && status < 300) {
+    return body && Array.isArray(body.hosts) ? { kind: "ok" } : { kind: "failed", error: "unexpected response from the controller" };
+  }
+  const why = body && typeof body.error === "string" ? ": " + body.error : "";
+  return { kind: "failed", error: "controller answered HTTP " + status + why };
+}
+
+// What a sign-in answer means: 'in', 'tfa' with a challenge, or 'failed'.
+export function loginOutcome(status, body) {
+  const b = body || {};
+  if (status === 204) return { kind: "in" };
+  if (status === 401 && typeof b.challenge === "string" && Array.isArray(b.tfa)) {
+    const kinds = ["totp", "recovery"].filter((k) => b.tfa.includes(k));
+    if (kinds.length) return { kind: "tfa", challenge: b.challenge, kinds };
+  }
+  const text = {
+    host_unreachable: "That host could not be reached, or its certificate is not the pinned one. The password was not checked.",
+    tfa_not_supported: "This account's second factor is not supported here. Only TOTP and recovery keys are.",
+    users_unusable: "The controller cannot use its users file. See its log.",
+  }[b.code];
+  if (text) return { kind: "failed", error: text };
+  if (status === 401) return { kind: "failed", error: "Wrong username or password." };
+  if (status === 429) return { kind: "failed", error: "Too many attempts. Wait a little, then try again." };
+  return { kind: "failed", error: "Sign-in failed (HTTP " + status + ")." };
+}
+
+// The second factor as the controller takes it, or null if it is not one.
+export function tfaAnswer(kind, input) {
+  const code = String(input).replace(/\s+/g, "");
+  if (kind === "totp") return /^[0-9]{6,8}$/.test(code) ? "totp:" + code : null;
+  if (kind === "recovery") return /^[0-9a-zA-Z-]+$/.test(code) ? "recovery:" + code : null;
+  return null;
+}
+
+// Marks work begun in one sign-in, so that what it brings back after the
+// sign-in ended is dropped.
+export function epochs() {
+  let n = 0;
+  return { start() { const mine = n; return () => mine === n; }, end() { n++; } };
+}
