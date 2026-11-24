@@ -13,6 +13,7 @@
 
 mod budget;
 mod config;
+mod private;
 mod secrets;
 
 use std::path::PathBuf;
@@ -23,6 +24,7 @@ use concord_pve::{ApiToken, HttpPveClient, PveApi, PveError};
 
 pub use budget::Budget;
 pub use config::{Config, HostConfig};
+pub use private::{lock_beside, read_private, write_private, DirLock};
 pub use secrets::{token_env_var, Secrets, SECRETS_FILE_ENV};
 
 #[derive(Debug, thiserror::Error)]

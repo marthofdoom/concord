@@ -1,7 +1,6 @@
 # Concord configuration. No secrets belong in this file.
 
-# Where the API listens. The API has no authentication yet, so it stays on
-# loopback unless something in front of it provides that.
+# Where the API listens. Plain HTTP on loopback; HTTPS, always, anywhere else.
 listen = "127.0.0.1:8010"
 
 # Seconds between polls of each host, 1 to 3600.
@@ -18,6 +17,18 @@ poll_interval_secs = 10
 # in upper case, anything but letters and digits as `_`) overrides one host's
 # secret.
 secrets_file = "concord-secrets.toml"
+
+# Where Concord keeps its own state, such as its generated certificate.
+# state_dir = "/var/lib/concord"
+
+# API users and tokens, managed by `concord user` and `concord token`. Mode 0600.
+# Defaults to users.toml in state_dir.
+# users_file = "/var/lib/concord/users.toml"
+
+# PEM certificate chain and key (0600). Without them, a listener beyond loopback
+# generates a self-signed certificate on first run and logs its fingerprint.
+# tls_cert = "concord.crt"
+# tls_key = "concord.key"
 
 [[hosts]]
 name = "pve1"

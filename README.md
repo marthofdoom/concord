@@ -10,8 +10,7 @@ API rather than by joining or reimplementing Corosync.
 
 > **Status:** 0.0.1 — early. One feature works: a live, **read-only inventory**
 > of several standalone hosts ([below](#what-works-today)). Everything else is
-> designed ([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)) but not built. The API
-> has no authentication yet, so keep it on loopback.
+> designed ([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)) but not built.
 
 > **Unofficial.** Concord is not affiliated with, endorsed by, or connected to
 > Proxmox Server Solutions GmbH. It talks to Proxmox VE through its documented
@@ -50,14 +49,35 @@ stale; a guest disappears only when its host answers and no longer lists it.
    lists without an error, so Concord would take them for deleted.
 2. Copy `concord.example.toml` to `concord.toml` and fill it in; put the token
    secrets in the secrets file (mode 0600).
-3. Run it, and query it:
+3. Add a user for yourself and a token for `concordctl`. There are no default
+   credentials: until one exists, the API refuses everyone.
 
    ```sh
-   CONCORD_CONFIG=concord.toml concord
+   export CONCORD_CONFIG=concord.toml
+   concord user add user1@pve --role admin       # asks for the password
+   (umask 077; concord token add ctl --role readonly > ctl.token)
+   ```
+
+   Roles are `admin` and `readonly`. `concord user list`, `user remove` and
+   `token remove` manage them; a running server honours a change on its next
+   request, and removing a user ends that user's sessions. As root, create
+   the users in a directory the service account owns: the file takes its owner.
+4. Run it, and query it:
+
+   ```sh
+   concord &
+   export CONCORD_TOKEN_FILE=ctl.token
    concordctl hosts
    concordctl guests --status running
    concordctl guest pve1 100 --json
    ```
+
+On loopback it speaks plain HTTP. On any other address it speaks HTTPS only, with
+the certificate in `tls_cert`/`tls_key` or a self-signed one it generates under
+`state_dir` on first run. It logs the certificate's SHA-256 fingerprint on start;
+give that to `concordctl` as `--fingerprint` or `CONCORD_FINGERPRINT`. A reverse
+proxy should connect to the HTTPS listener and pass the original `Host` on:
+browsers' writes are checked against it.
 
 ## Layout
 

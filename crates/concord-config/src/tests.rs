@@ -191,7 +191,7 @@ fn an_implausible_unknown_key_is_not_repeated() {
 #[cfg(unix)]
 #[test]
 fn only_this_user_or_root_may_own_the_secrets_file() {
-    use crate::secrets::trusted_owner;
+    use crate::private::trusted_owner;
     assert!(trusted_owner(1000, 1000) && trusted_owner(0, 1000) && trusted_owner(0, 0));
     assert!(!trusted_owner(1001, 1000) && !trusted_owner(1000, 0));
 }
@@ -377,4 +377,21 @@ fn the_environment_overrides() {
     .unwrap_err();
     assert!(!format!("{e} {e:?}").contains(SECRET), "{e:?}");
     assert!(e.to_string().starts_with("CONCORD_TOKEN_PVE1"), "{e}");
+}
+
+#[test]
+fn access_settings_default_and_resolve_beside_the_config() {
+    let base = include_str!("../../../concord.example.toml");
+    let cfg = Config::parse(base).unwrap();
+    assert_eq!(cfg.users_path(), Path::new("/var/lib/concord/users.toml"));
+    for only in ["tls_cert = \"c\"\n", "tls_key = \"k\"\n"] {
+        assert!(Config::parse(&format!("{only}{base}")).is_err());
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("c.toml");
+    let text = format!("tls_cert = \"c\"\ntls_key = \"k\"\nstate_dir = \"s\"\n{base}");
+    std::fs::write(&f, text).unwrap();
+    let cfg = Config::load(&f).unwrap();
+    assert_eq!(cfg.tls_key, Some(dir.path().join("k")));
+    assert_eq!(cfg.users_path(), dir.path().join("s/users.toml"));
 }

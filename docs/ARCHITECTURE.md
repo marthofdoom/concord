@@ -39,6 +39,23 @@ Dormant instances serve the UI read-only and forward writes to the active one,
 so any host's address is a working entry point. A guest is never touched by an
 instance that is not active and holding that guest's lease.
 
+### Who may ask
+
+Every `/api/v1` route needs an identity: a login session (cookie) or a bearer
+token, each an admin or read-only. The gate is one layer over the whole API, and
+the public routes (health, the UI's static assets, logging in) are the exceptions
+outside it, so a new endpoint is refused by default. Users and token hashes live
+in one 0600 file that the server re-checks on every request; sessions are bound
+to the password hash they were opened with, so removing a user, or removing and
+re-adding one, ends them at once. A file that cannot be trusted refuses everyone.
+Sessions are held in memory and end with the process.
+
+The authenticated identity travels with the request as a typed value. Carrying it
+from a dormant instance to the active one, so that a forwarded write is authorised
+and audited as the person who made it, is **not built**: it needs the peer
+channel and the election (CON-17, CON-18) and waits for them. Until then each
+instance authenticates only its own clients.
+
 ### Why the agent is nearly empty
 
 Anything the orchestrator can do over the API, it does over the API. The agent

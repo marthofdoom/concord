@@ -1,0 +1,14 @@
+# Starting point for deploy.sh --config. Paths here are inside the container.
+# Copy next to your own host list (see ../../concord.example.toml for [[hosts]]).
+
+# Non-loopback, so the service serves HTTPS with a self-signed certificate.
+listen = "0.0.0.0:8010"
+
+# deploy.sh pushes the secrets file to /etc/concord/secrets.toml (mode 0600,
+# owner concord); the relative path resolves against this file's directory.
+secrets_file = "secrets.toml"
+
+# /var/lib/concord belongs to the concord user, so `concord user add` can write
+# it when run as that user.
+users_file = "/var/lib/concord/users.toml"
+state_dir = "/var/lib/concord"

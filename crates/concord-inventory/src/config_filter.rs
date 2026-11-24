@@ -1,6 +1,6 @@
 //! Which of a guest's `/config` keys enter the inventory.
 //!
-//! The snapshot is served by an API with no authentication yet, so this is an
+//! The snapshot is served to every API user, read-only ones too, so this is an
 //! allowlist: a key PVE adds later stays out until someone has looked at it.
 //! The names are those of the PVE 9.2 schema (`PVE::QemuServer`,
 //! `PVE::LXC::Config`), plus the few its GET adds (`digest`, `meta`, `parent`).

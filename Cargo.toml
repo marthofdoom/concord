@@ -28,6 +28,13 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "tim
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# Unoptimised, one password hash takes seconds and dominates the tests.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
+
 [profile.release]
 lto = "thin"
 strip = true

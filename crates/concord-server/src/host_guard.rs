@@ -1,7 +1,7 @@
 //! Refuses requests addressed to a name that is not this machine's loopback.
 //!
-//! Binding to loopback is the API's only protection, and DNS rebinding defeats
-//! it: a web page open on this machine can point its own name at 127.0.0.1 and
+//! Plain HTTP and unauthenticated routes are reachable on loopback because only
+//! this machine is there, and DNS rebinding defeats that: a web page open on this machine can point its own name at 127.0.0.1 and
 //! read the replies as same-origin. The browser still sends that name as Host,
 //! which is what gives it away.
 
@@ -19,7 +19,7 @@ use axum::Router;
 /// which names are legitimate there is the operator's to know.
 pub fn guard_host(app: Router, listen: SocketAddr) -> Router {
     if listen.ip().to_canonical().is_loopback() {
-        app.layer(middleware::from_fn(check))
+        crate::secure_headers(app.layer(middleware::from_fn(check)))
     } else {
         app
     }
