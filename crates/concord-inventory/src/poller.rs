@@ -450,6 +450,31 @@ async fn fetch_status(
     serde_json::from_value(v).map_err(|e| PveError::Decode(e.to_string()))
 }
 
+/// True for the 403 PVE's own container code raises for a read-only token on
+/// any container whose config sets `env`. In pve-container 6.1.14 (corrected by 6.1.27),
+/// `delete_read_restricted_options` calls `check_vm_perm($user, $vmid, $pool,
+/// [priv], 1)`, but the signature is `(..., $privs, $any, $noerr)`: the 1 lands
+/// in `$any`, so the check dies instead of stripping `env`. `/pending` shares
+/// the function, so there is no read-only way round it, and granting
+/// VM.Config.Options (a write privilege) is not acceptable. Matched narrowly:
+/// this guest's own id and this privilege only; any other 403 stays an error.
+fn is_env_config_403(kind: GuestKind, vmid: &str, e: &PveError) -> bool {
+    matches!(kind, GuestKind::Lxc)
+        && matches!(e, PveError::Http { status: 403, message, .. }
+            if names_vmid(message, vmid) && message.contains("VM.Config.Options"))
+}
+
+/// `/vms/7` must not match `/vms/70`: the id has to end at a non-digit.
+fn names_vmid(message: &str, vmid: &str) -> bool {
+    let needle = format!("/vms/{vmid}");
+    message.match_indices(&needle).any(|(i, _)| {
+        !message[i + needle.len()..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_digit())
+    })
+}
+
 /// Builds one guest from its list entry plus the two detail calls. A failed
 /// detail call leaves the list data in place and records why; it never fails
 /// the host.
@@ -470,8 +495,15 @@ async fn detail(
         fetch_status(&client, &node, kind, &vmid_s)
     );
     let mut errs = Vec::new();
+    let mut config_restricted = false;
     let filtered = match cfg {
         Ok(m) => Some(m),
+        // Not a failure and not worth a warning: the config is known to be
+        // unreadable, so an earlier copy must not stand in as current.
+        Err(e) if is_env_config_403(kind, &vmid_s, &e) => {
+            config_restricted = true;
+            None
+        }
         Err(e) => {
             errs.push(format!("config: {}", clean(e)));
             old_config
@@ -507,6 +539,7 @@ async fn detail(
         stale: false,
         config,
         config_omitted,
+        config_restricted,
         detail_error: if errs.is_empty() {
             None
         } else {

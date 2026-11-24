@@ -34,6 +34,12 @@ test("filter and sort", () => {
   assert.equal(L.sortGuests(rows, "bogus", "asc")[0].vmid, 100);
 });
 
+test("a config-restricted guest is not an attention item", () => {
+  const e = estate();
+  e.hosts[0].guests[0].config_restricted = true;
+  assert.equal(L.attention(e, 1010).some((i) => i.href.includes("100")), false);
+});
+
 test("attention lists worst first with reasons", () => {
   const items = L.attention(estate({ conflicts: [{ vmid: 7, hosts: ["pve1", "pve2"] }] }), 1010);
   assert.equal(items[0].level, "bad");

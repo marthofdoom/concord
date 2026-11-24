@@ -56,7 +56,7 @@ Copy the template and `deploy.sh` to the PVE host, then, as root there:
 
     bash ./deploy.sh --vmid 9100 --storage local-lvm --bridge vmbr0 \
         --ip 192.0.2.50/24 --gateway 192.0.2.1 \
-        --template concord-0.1.0-amd64.tar.xz
+        --template concord-0.1.1-amd64.tar.xz
 
 This also creates what Concord needs to read this host, and writes the config:
 
@@ -87,7 +87,7 @@ container is healthy (a container still using the old one loses access).
     bash ./deploy.sh --vmid 9100 --storage local-lvm --bridge vmbr0 \
         --ip 192.0.2.50/24 --gateway 192.0.2.1 \
         --config concord.toml --secrets secrets.toml \
-        --template concord-0.1.0-amd64.tar.xz
+        --template concord-0.1.1-amd64.tar.xz
 
 Here nothing is created in PVE. Use `--ip dhcp` to take an address from DHCP,
 and `--dry-run` to print every mutating command without running it. Start from `deploy/ct/concord.ct.example.toml`

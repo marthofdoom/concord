@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1
+
+- A container whose config sets environment variables no longer shows a
+  permanent "detail unavailable" warning to a read-only token. Proxmox refuses
+  that config to such tokens (a bug in its permission check); the guest page now
+  says the configuration is hidden, and the rest of the guest still shows.
+
 ## 0.1.0
 
 First release.

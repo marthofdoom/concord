@@ -99,6 +99,10 @@ pub struct Guest {
     /// Names of the `/config` keys left out of `config`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub config_omitted: Vec<String>,
+    /// Proxmox refused the config to this read-only token (a container that
+    /// sets `env`); `config` is absent for that reason, not by accident.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub config_restricted: bool,
     /// Why the per-guest detail calls failed; the list data above is still
     /// the latest known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
