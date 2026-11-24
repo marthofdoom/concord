@@ -406,6 +406,16 @@ replacing it, and grows its UI by need instead of by parity.
   narrowest link on that path, so it needs to know the path.
 - Where do credentials live? An API token per host, stored — but stored where,
   and unlocked how, given every instance must come up unattended?
+  *Settled for now, with a known cost (CON-2):* token secrets live in a TOML
+  file separate from the configuration, refused unless it is a regular file with
+  no group or other permissions, or in per-host environment variables. Nothing
+  is encrypted at rest. An instance that restarts with nobody present needs the
+  unlocking key to hand, and a key readable by the same container protects the
+  secret from nothing that can read that container. So whoever controls a
+  container that holds a secret, its backups, or the host under it has the
+  token; what limits the damage is the token's own privileges, and giving each
+  container only the secrets it uses. How secrets reach containers on other
+  hosts is still open.
 - Is the agent allowed to act on anything other than Concord's own container?
 - Does a Concord container get restarted on a surviving host too, or is one
   per surviving host already enough?

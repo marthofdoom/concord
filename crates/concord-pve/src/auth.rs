@@ -64,22 +64,24 @@ impl ApiToken {
         }
     }
 
+    /// Splits and checks a full token id, `USER@REALM!TOKENID`, as
+    /// `(user, token_id)`. Apart from the secret, so that configuration can be
+    /// validated before any credential is read. Errors never echo the input:
+    /// pasting the whole `...=SECRET` here is an easy mistake.
+    pub fn parse_full_id(id: &str) -> Result<(&str, &str), PveError> {
+        let (user, token_id) = id.split_once('!').ok_or_else(|| {
+            PveError::InvalidRequest("token id must be USER@REALM!TOKENID".into())
+        })?;
+        check_id(user, token_id)?;
+        Ok((user, token_id))
+    }
+
     /// The `Authorization` header value, marked sensitive so the HTTP stack
     /// omits it from its own debug output.
     ///
     /// Errors never include the offending value, only which part was bad.
     pub(crate) fn header_value(&self) -> Result<HeaderValue, PveError> {
-        if !valid_userid(&self.user) {
-            return Err(PveError::InvalidRequest(
-                "token user must be user@realm as PVE defines it, without '!', '=', '%' or ';'"
-                    .into(),
-            ));
-        }
-        if !valid_realm_like(&self.token_id) {
-            return Err(PveError::InvalidRequest(
-                "token id must be a letter followed by letters, digits, '.', '-' or '_'".into(),
-            ));
-        }
+        check_id(&self.user, &self.token_id)?;
         if !uuid_shaped(self.secret.expose()) {
             return Err(PveError::InvalidRequest(
                 "token secret must be a UUID (8-4-4-4-12 hex digits), as PVE generates".into(),
@@ -101,6 +103,20 @@ impl ApiToken {
         value.set_sensitive(true);
         Ok(value)
     }
+}
+
+fn check_id(user: &str, token_id: &str) -> Result<(), PveError> {
+    if !valid_userid(user) {
+        return Err(PveError::InvalidRequest(
+            "token user must be user@realm as PVE defines it, without '!', '=', '%' or ';'".into(),
+        ));
+    }
+    if !valid_realm_like(token_id) {
+        return Err(PveError::InvalidRequest(
+            "token id must be a letter followed by letters, digits, '.', '-' or '_'".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// PVE's userid grammar (pve-access-control `PVE::Auth::Plugin`):

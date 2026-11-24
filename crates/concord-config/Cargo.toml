@@ -1,0 +1,24 @@
+[package]
+name = "concord-config"
+description = "Concord's configuration file and the PVE token secrets kept beside it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+concord-core = { path = "../concord-core" }
+concord-pve = { path = "../concord-pve" }
+serde.workspace = true
+thiserror.workspace = true
+toml = "0.8"
+url = "2"
+zeroize = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

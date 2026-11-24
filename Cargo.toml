@@ -2,9 +2,12 @@
 resolver = "2"
 members = [
     "crates/concord-core",
+    "crates/concord-config",
     "crates/concord-server",
     "crates/concord-agent",
     "crates/concord-pve",
+    "crates/concord-inventory",
+    "crates/concordctl",
     "testbed/nestview",
 ]
 

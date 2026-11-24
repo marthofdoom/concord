@@ -31,14 +31,17 @@ const TASK_PSTART: u64 = 0x10000;
 /// capture picks the same ones.
 const FIRST_VMID: u64 = 101;
 /// Any other guest id (a list entry, an archive, a task) from here: above the
-/// captured ones and the test estate's.
+/// captured ones and the test estate's, which the committed fixtures keep.
 const FIRST_OTHER_VMID: u64 = 9101;
 
-/// Ids that carry nothing: the documented test estate, and the capture's
-/// deliberate miss.
-fn vmid_is_public(id: u64) -> bool {
-    matches!(id, 9001..=9004 | 999_999_999)
-}
+/// The capture's deliberate miss: the one id that is never a real guest's.
+const PROBE_VMID: u64 = 999_999_999;
+
+/// Ids of the documented test estate, which the committed fixtures were
+/// captured with and still carry. Only those fixtures are checked with these
+/// kept: on any other host the same numbers are somebody's real guests.
+#[cfg(test)]
+pub(crate) const TEST_ESTATE_VMIDS: &[u64] = &[9001, 9002, 9003, 9004];
 
 const GIB: u64 = 1 << 30;
 const FAILED: &str = "command 'placeholder' failed: exit code 1";
@@ -46,11 +49,17 @@ const FAILED: &str = "command 'placeholder' failed: exit code 1";
 /// Rewrites a sanitised capture in place. Takes the whole set, because ids and
 /// dates are numbered over all of it.
 pub fn normalise(entries: &mut [Entry]) {
+    normalise_keeping(entries, &[]);
+}
+
+/// [`normalise`], leaving the guest ids in `keep` as they are.
+pub(crate) fn normalise_keeping(entries: &mut [Entry], keep: &[u64]) {
+    let kept = |id: u64| id == PROBE_VMID || keep.contains(&id);
     for e in entries.iter_mut() {
         e.path = map_path(&e.path, &generic_task);
         each_body(e, &mut |v| task_outcomes(v));
     }
-    let captured = captured_vmids(entries);
+    let captured = captured_vmids(entries, &kept);
     for e in entries.iter_mut() {
         trim(e, &captured);
     }
@@ -63,7 +72,7 @@ pub fn normalise(entries: &mut [Entry]) {
         seen.ids.extend(guest_in_path(&e.path));
         each_body(e, &mut |v| seen.value(None, v));
     }
-    let maps = Maps::new(&seen, &captured);
+    let maps = Maps::new(&seen, &captured, &kept);
 
     for e in entries.iter_mut() {
         if let Some(id) = guest_in_path(&e.path) {
@@ -113,11 +122,11 @@ fn guest_in_path(path: &str) -> Option<u64> {
         .and_then(|w| w[1].parse().ok())
 }
 
-fn captured_vmids(entries: &[Entry]) -> BTreeSet<u64> {
+fn captured_vmids(entries: &[Entry], kept: &dyn Fn(u64) -> bool) -> BTreeSet<u64> {
     entries
         .iter()
         .filter_map(|e| guest_in_path(&e.path))
-        .filter(|id| !vmid_is_public(*id))
+        .filter(|id| !kept(*id))
         .collect()
 }
 
@@ -289,11 +298,11 @@ struct Maps {
 }
 
 impl Maps {
-    fn new(seen: &Seen, captured: &BTreeSet<u64>) -> Self {
+    fn new(seen: &Seen, captured: &BTreeSet<u64>, kept: &dyn Fn(u64) -> bool) -> Self {
         let others = seen
             .ids
             .iter()
-            .filter(|id| !vmid_is_public(**id) && !captured.contains(id));
+            .filter(|id| !kept(**id) && !captured.contains(id));
         let ids = (captured.iter().zip(FIRST_VMID..))
             .chain(others.zip(FIRST_OTHER_VMID..))
             .map(|(old, new)| (*old, new))
@@ -735,8 +744,15 @@ mod tests {
             entry(p, json!({})),
         ];
         let before = es.clone();
-        normalise(&mut es);
+        normalise_keeping(&mut es, TEST_ESTATE_VMIDS);
         assert_eq!(es, before);
+
+        // Without that allowance they are an ordinary host's guests.
+        normalise(&mut es);
+        let all = format!("{es:?}");
+        assert!(!all.contains("9001"), "{all}");
+        assert_eq!(es[0].path, "/nodes/node1/qemu/101/config");
+        assert_eq!(es[1..], before[1..]);
     }
 
     #[test]

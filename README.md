@@ -8,10 +8,10 @@ resource-driven automatic placement, backup orchestration that repairs itself,
 and update automation for OCI-based guests — by driving Proxmox's own public
 API rather than by joining or reimplementing Corosync.
 
-> **Status:** 0.0.1 — scaffold. The architecture is written down
-> ([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)), and the PVE API client and the
-> test estate exist; the subsystems are not built yet. Do not point this at
-> hosts you care about.
+> **Status:** 0.0.1 — early. One feature works: a live, **read-only inventory**
+> of several standalone hosts ([below](#what-works-today)). Everything else is
+> designed ([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)) but not built. The API
+> has no authentication yet, so keep it on loopback.
 
 > **Unofficial.** Concord is not affiliated with, endorsed by, or connected to
 > Proxmox Server Solutions GmbH. It talks to Proxmox VE through its documented
@@ -20,7 +20,7 @@ API rather than by joining or reimplementing Corosync.
 
 ## What it is meant to do
 
-None of this is built yet.
+None of the capabilities in this table are built yet.
 
 | Capability | How, without a cluster |
 | --- | --- |
@@ -32,11 +32,41 @@ None of this is built yet.
 | **OCI guest updates** | Pulls a new image, snapshots first, migrates binds and volumes onto the new layout, and rolls back on a failed health check |
 | **Web access** | A first-party UI for all of the above, beside the PVE UI on 8006 rather than replacing it |
 
+## What works today
+
+The controller polls every configured host and serves one picture of all hosts
+and guests. A host that stops answering keeps its last-known guests, marked
+stale; a guest disappears only when its host answers and no longer lists it.
+
+1. On each host, create a token that can only read:
+
+   ```sh
+   pveum user add user1@pve
+   pveum acl modify / --users user1@pve --roles PVEAuditor
+   pveum user token add user1@pve token-1 --privsep 0
+   ```
+
+   The role must cover `/`: PVE leaves guests the token may not see out of its
+   lists without an error, so Concord would take them for deleted.
+2. Copy `concord.example.toml` to `concord.toml` and fill it in; put the token
+   secrets in the secrets file (mode 0600).
+3. Run it, and query it:
+
+   ```sh
+   CONCORD_CONFIG=concord.toml concord
+   concordctl hosts
+   concordctl guests --status running
+   concordctl guest pve1 100 --json
+   ```
+
 ## Layout
 
 ```
 crates/concord-core     shared types; no network
 crates/concord-server   orchestrator: HTTP API, web UI, jobs  → binary `concord`
+crates/concord-config   configuration file and token secrets
+crates/concord-inventory  polls the hosts; one snapshot of the estate
+crates/concordctl       command-line client of the API        → binary `concordctl`
 crates/concord-agent    host-side watchdog, no runtime deps   → binary `concord-agent`
 crates/concord-pve      PVE API client: token auth, certificate pinning, mock
 testbed/                nested-PVE test estate and its dashboard (docs/TESTBED.md)

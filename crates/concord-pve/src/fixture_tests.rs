@@ -8,6 +8,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::http::parse_envelope;
+use crate::normalise::{normalise_keeping, TEST_ESTATE_VMIDS};
 use crate::*;
 
 fn sets() -> Vec<FixtureSet> {
@@ -104,7 +105,7 @@ fn committed_fixtures_are_normalised() {
     for s in sets() {
         let before = entries_of(&s);
         let mut after = before.clone();
-        normalise(&mut after);
+        normalise_keeping(&mut after, TEST_ESTATE_VMIDS);
         for (b, a) in before.iter().zip(&after) {
             assert_eq!(b, a, "{}: not normalised", s.pve_version);
         }
