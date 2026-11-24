@@ -51,7 +51,11 @@ stale; a guest disappears only when its host answers and no longer lists it.
    root, set `state_dir` to a directory you can create (say `"state"`); put the token
    secrets in the secrets file (mode 0600).
 3. Add a user for yourself and a token for `concordctl`. There are no default
-   credentials: until one exists, the API refuses everyone.
+   credentials. Root on a tracked host needs none: it signs in to the web UI as
+   `root@<host name>` with that host's root password (and its TOTP code or
+   recovery key), checked by that host alone, for at most two hours. **That makes
+   root on any tracked host an admin of the whole estate**; `pve_root_login =
+   false` turns it off.
 
    ```sh
    export CONCORD_CONFIG=concord.toml

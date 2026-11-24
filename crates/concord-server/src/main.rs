@@ -18,6 +18,9 @@ use concord_server::{guard_host, router, tls, AppState, Auth, AuthConfig};
 /// one powered-off machine delays the others' fresh data by seconds only.
 const PVE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// PVE holds a refusal back for three seconds, so this is not `PVE_TIMEOUT`.
+const PVE_LOGIN_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Upper bound on one host's whole poll.
 const HOST_DEADLINE: Duration = Duration::from_secs(20);
 
@@ -49,7 +52,12 @@ async fn main() -> anyhow::Result<()> {
         Some(t) => tracing::info!(fingerprint = %t.fingerprint, "serving HTTPS"),
         None => tracing::info!("serving plain HTTP, on loopback only"),
     }
-    let auth = Auth::new(AuthConfig::new(config.users_path(), tls.is_some()))?;
+    let mut auth = AuthConfig::new(config.users_path(), tls.is_some());
+    auth.pve = config.build_root_logins(PVE_LOGIN_TIMEOUT)?;
+    if !auth.pve.is_empty() {
+        tracing::info!("root on any configured host may sign in (pve_root_login)");
+    }
+    let auth = Auth::new(auth)?;
 
     let (poller, inventory) = Poller::new(
         hosts,

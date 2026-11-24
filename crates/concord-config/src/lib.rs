@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use concord_pve::{ApiToken, HttpPveClient, PveApi, PveError};
+use concord_pve::{ApiToken, HttpPveClient, PveApi, PveError, RootLogin};
 
 pub use budget::Budget;
 pub use config::{Config, HostConfig};
@@ -57,6 +57,25 @@ pub enum ConfigError {
 pub type Clients = Vec<(String, Arc<dyn PveApi>)>;
 
 impl Config {
+    /// What asks each host about its root's password; empty if that is off.
+    pub fn build_root_logins(
+        &self,
+        timeout: Duration,
+    ) -> Result<Vec<(String, RootLogin)>, ConfigError> {
+        self.hosts
+            .iter()
+            .filter(|_| self.pve_root_login)
+            .map(|h| {
+                RootLogin::new(&h.api_url, h.fingerprint, timeout)
+                    .map(|r| (h.name.clone(), r))
+                    .map_err(|source| ConfigError::Client {
+                        host: h.name.clone(),
+                        source,
+                    })
+            })
+            .collect()
+    }
+
     /// One pinned, authenticated client per host, in configuration order.
     pub fn build_clients(
         &self,

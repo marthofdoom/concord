@@ -27,6 +27,8 @@ required-features = ["capture"]
 [dependencies]
 concord-core = { path = "../concord-core" }
 async-trait = "0.1"
+# 1.9 for `from_owner`, which lets a request body be wiped after use.
+bytes = "1.9"
 # Only to name `hyper::ext::ReasonPhrase` on reqwest's responses; reqwest
 # already depends on hyper 1 with `http1`, so this adds no new crate.
 hyper = { version = "1", default-features = false, features = ["http1"] }
@@ -39,7 +41,7 @@ sha2 = "0.10"
 subtle = "2"
 thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }
-zeroize = "1"
+zeroize = { version = "1", features = ["serde"] }
 
 [dev-dependencies]
 concord-pve = { path = ".", features = ["mock", "capture"] }

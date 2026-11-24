@@ -23,6 +23,7 @@ mod error;
 #[cfg(any(test, feature = "capture"))]
 mod fixtures;
 mod http;
+mod login;
 #[cfg(any(test, feature = "mock"))]
 mod mock;
 #[cfg(any(test, feature = "capture"))]
@@ -40,6 +41,7 @@ pub use error::PveError;
 #[cfg(any(test, feature = "capture"))]
 pub use fixtures::{FixtureSet, FIXTURE_ROOT};
 pub use http::HttpPveClient;
+pub use login::{LoginOutcome, RootLogin, TfaChallenge};
 #[cfg(any(test, feature = "mock"))]
 pub use mock::{Call, MockPve};
 #[cfg(any(test, feature = "capture"))]
