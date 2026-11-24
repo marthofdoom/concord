@@ -85,3 +85,38 @@ test("guest detail failure carries no data", () => {
 test("a 503 after data is never live", () => {
   assert.equal(L.freshness({ fetchOk: true, takenAt: 1000, nowSecs: 1001, waiting: true }), "old");
 });
+
+test("only a 503 that says so is starting up", () => {
+  assert.equal(L.estateOutcome(503, { code: "starting" }).kind, "starting");
+  for (const b of [null, {}, { code: "users_unusable", error: "x" }]) assert.equal(L.estateOutcome(503, b).kind, "failed");
+  assert.match(L.estateOutcome(503, { error: "the users file" }).error, /users file/);
+  assert.equal(L.estateOutcome(200, { hosts: [] }).kind, "ok");
+  assert.equal(L.estateOutcome(200, {}).kind, "failed");
+});
+
+test("sign-in outcomes", () => {
+  assert.equal(L.loginOutcome(204, null).kind, "in");
+  assert.deepEqual(L.loginOutcome(401, { challenge: "c", tfa: ["recovery", "totp", "x"] }), { kind: "tfa", challenge: "c", kinds: ["totp", "recovery"] });
+  assert.equal(L.loginOutcome(401, { challenge: "c", tfa: ["x"] }).kind, "failed");
+  assert.equal(L.loginOutcome(200, { challenge: "c", tfa: ["totp"] }).kind, "failed");
+  assert.match(L.loginOutcome(503, { code: "host_unreachable" }).error, /host could not be reached/);
+  assert.match(L.loginOutcome(501, { code: "tfa_not_supported" }).error, /not supported/);
+  assert.match(L.loginOutcome(429, null).error, /Too many/);
+});
+
+test("second factor answers", () => {
+  assert.equal(L.tfaAnswer("totp", " 123 456 "), "totp:123456");
+  assert.equal(L.tfaAnswer("totp", "12345a"), null);
+  assert.equal(L.tfaAnswer("recovery", "ab12-cd34"), "recovery:ab12-cd34");
+  assert.equal(L.tfaAnswer("recovery", ""), null);
+  assert.equal(L.tfaAnswer("u2f", "1"), null);
+});
+
+test("work from an ended sign-in is not current", () => {
+  const e = L.epochs();
+  const old = e.start();
+  assert.ok(old());
+  e.end();
+  assert.ok(!old());
+  assert.ok(e.start()());
+});

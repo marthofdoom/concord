@@ -50,6 +50,19 @@ to the password hash they were opened with, so removing a user, or removing and
 re-adding one, ends them at once. A file that cannot be trusted refuses everyone.
 Sessions are held in memory and end with the process.
 
+Root on a tracked host may also sign in, as `root@<name in the configuration>`.
+Concord asks that host and no other, over its pinned certificate, and keeps
+neither the password nor the ticket; a second factor (TOTP or a recovery key) is
+answered through a single-use, two-minute handle that is no login by itself. The
+session is an admin's and lasts at most two hours, PVE's own ticket lifetime. So
+root on any one host is an admin of all of them, which is why `pve_root_login`
+can turn it off. New local names may not start with `root@`; one already there
+takes precedence, and its password goes to no host. An unreachable host answers
+differently from a refusal, so a host that is down can be told from an unknown
+one; otherwise the two take equally long. Because it checks passwords at the
+host, changing root's password there does not end a session already open here;
+restarting Concord does.
+
 The authenticated identity travels with the request as a typed value. Carrying it
 from a dormant instance to the active one, so that a forwarded write is authorised
 and audited as the person who made it, is **not built**: it needs the peer

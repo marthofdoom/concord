@@ -37,6 +37,8 @@ pub struct Config {
     /// API users and tokens. [`Config::users_path`] applies the default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub users_file: Option<PathBuf>,
+    /// Whether root on any host may sign in here, as an admin of all of them.
+    pub pve_root_login: bool,
     /// Both or neither.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tls_cert: Option<PathBuf>,
@@ -74,6 +76,7 @@ struct RawConfig {
     secrets_file: Option<PathBuf>,
     state_dir: Option<PathBuf>,
     users_file: Option<PathBuf>,
+    pve_root_login: Option<bool>,
     tls_cert: Option<PathBuf>,
     tls_key: Option<PathBuf>,
     #[serde(default)]
@@ -174,6 +177,7 @@ impl Config {
             secrets_file: raw.secrets_file,
             state_dir: raw.state_dir.unwrap_or_else(|| DEFAULT_STATE_DIR.into()),
             users_file: raw.users_file,
+            pve_root_login: raw.pve_root_login.unwrap_or(true),
             tls_cert: raw.tls_cert,
             tls_key: raw.tls_key,
             hosts,

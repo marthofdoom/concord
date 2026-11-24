@@ -169,7 +169,10 @@ async fn session_contract_over_tls() {
     assert_eq!(r.headers()["cache-control"], "no-store");
     assert_eq!(r.headers()["x-content-type-options"], "nosniff");
     let v: Value = r.json().await.expect("json");
-    assert_eq!(v, json!({"user": "user2@pve", "role": "admin"}));
+    assert_eq!(
+        v,
+        json!({"user": "user2@pve", "role": "admin", "source": "local"})
+    );
     // Two cookies of the name are ambiguous.
     let two = format!("{cookie}; {cookie}");
     let st = s

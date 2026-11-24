@@ -25,6 +25,12 @@ secrets_file = "concord-secrets.toml"
 # Defaults to users.toml in state_dir.
 # users_file = "/var/lib/concord/users.toml"
 
+# Let `root@<host name below>` sign in with that host's root password, checked by
+# that host. It makes root on ANY listed host an admin of the WHOLE estate; set
+# it to false unless every host's root is trusted with every other host.
+# Defaults to true.
+# pve_root_login = true
+
 # PEM certificate chain and key (0600). Without them, a listener beyond loopback
 # generates a self-signed certificate on first run and logs its fingerprint.
 # tls_cert = "concord.crt"

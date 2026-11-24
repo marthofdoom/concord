@@ -16,16 +16,17 @@ use axum::http::{header::WWW_AUTHENTICATE, HeaderMap, HeaderValue, Method, Statu
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use concord_pve::{LoginOutcome, PveError, RootLogin, TfaChallenge};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use zeroize::Zeroizing;
 
-use crate::error;
 use crate::users::{
     digest, hash_password, hex, random, verify_password, Role, Store, Unusable, UsersError,
     MAX_PASSWORD,
 };
+use crate::{coded, error};
 
 /// Over TLS the name carries `__Host-`, which makes the browser refuse one set
 /// by another host or over plain http. Cookies ignore the port, so two
@@ -49,6 +50,20 @@ const MAX_SOURCES: usize = 4096;
 const HASHES_AT_ONCE: usize = 2;
 const HASH_WAIT: Duration = Duration::from_secs(5);
 
+/// Checks one host is asked to make at once. Per host, so that a hung one holds
+/// up nobody else's sign-in; and apart from the hashes, so not local users'.
+const PVE_AT_ONCE: usize = 4;
+const PVE_WAIT: Duration = Duration::from_secs(5);
+/// PVE's own ticket lifetime.
+const PVE_ABSOLUTE: Duration = Duration::from_secs(2 * 3600);
+/// No refusal of `root@...` comes sooner, whether or not there is such a host.
+/// Past the three seconds PVE holds a refusal back for.
+const PVE_FLOOR: Duration = Duration::from_secs(5);
+const CHALLENGE_LIFE: Duration = Duration::from_secs(120);
+/// Each one took a right password to get.
+const MAX_CHALLENGES: usize = 32;
+const MAX_TFA: usize = 128;
+
 /// The authenticated caller, as a request extension. Serialisable so that an
 /// instance forwarding a write can say on whose behalf.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,6 +71,17 @@ pub struct Identity {
     pub user: String,
     pub role: Role,
     pub via: Via,
+    pub source: Source,
+}
+
+/// Who vouched for the caller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Source {
+    /// The users file.
+    Local,
+    /// A PVE host, for its root.
+    Pve,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,6 +102,11 @@ pub struct AuthConfig {
     pub tls: bool,
     pub idle: Duration,
     pub absolute: Duration,
+    /// Hosts whose root may sign in as `root@<name>`.
+    pub pve: Vec<(String, RootLogin)>,
+    pub pve_absolute: Duration,
+    pub pve_floor: Duration,
+    pub challenge_life: Duration,
 }
 
 impl AuthConfig {
@@ -85,6 +116,10 @@ impl AuthConfig {
             tls,
             idle: Duration::from_secs(30 * 60),
             absolute: Duration::from_secs(12 * 3600),
+            pve: Vec::new(),
+            pve_absolute: PVE_ABSOLUTE,
+            pve_floor: PVE_FLOOR,
+            challenge_life: CHALLENGE_LIFE,
         }
     }
 }
@@ -93,9 +128,33 @@ struct Session {
     user: String,
     /// The hash logged in against. A user removed and added again, or given a
     /// new password, has a new one, and this session is then worth nothing.
-    password_hash: String,
+    /// `None` for a PVE host's root, whom the users file says nothing about.
+    password_hash: Option<String>,
     created: Instant,
     used: Instant,
+}
+
+impl Session {
+    fn source(&self) -> Source {
+        match self.password_hash {
+            Some(_) => Source::Local,
+            None => Source::Pve,
+        }
+    }
+}
+
+struct PveHost {
+    name: String,
+    login: RootLogin,
+    slots: Arc<Semaphore>,
+}
+
+/// A password accepted by `host`, awaiting the second factor.
+struct Pending {
+    host: usize,
+    from: IpAddr,
+    tfa: TfaChallenge,
+    created: Instant,
 }
 
 struct Failures {
@@ -113,6 +172,10 @@ pub struct Auth {
     sessions: Mutex<HashMap<[u8; 32], Session>>,
     failures: Mutex<HashMap<IpAddr, Failures>>,
     hashes: Arc<Semaphore>,
+    pve: Vec<PveHost>,
+    /// What an unknown host is queued on, so that it queues the same.
+    no_host: Arc<Semaphore>,
+    pending: Mutex<HashMap<[u8; 32], Pending>>,
 }
 
 // Nothing panics while one of these is held with the map half changed.
@@ -123,8 +186,20 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 impl Auth {
     pub fn new(cfg: AuthConfig) -> Result<Arc<Auth>, UsersError> {
         let dummy = hash_password(&hex(&random::<32>()?[..]))?;
+        let slots = || Arc::new(Semaphore::new(PVE_AT_ONCE));
         let auth = Auth {
-            store: Store::new(cfg.users_file.clone()),
+            store: Store::new(cfg.users_file.clone(), !cfg.pve.is_empty()),
+            pve: cfg
+                .pve
+                .iter()
+                .map(|(name, login)| PveHost {
+                    name: name.clone(),
+                    login: login.clone(),
+                    slots: slots(),
+                })
+                .collect(),
+            no_host: slots(),
+            pending: Mutex::default(),
             cfg,
             dummy,
             sessions: Mutex::new(HashMap::new()),
@@ -138,22 +213,31 @@ impl Auth {
 
     fn live(&self, s: &Session, now: Instant) -> bool {
         now.duration_since(s.used) < self.cfg.idle
-            && now.duration_since(s.created) < self.cfg.absolute
+            && now.duration_since(s.created) < self.lifetime(s.source())
+    }
+
+    fn lifetime(&self, source: Source) -> Duration {
+        match source {
+            Source::Local => self.cfg.absolute,
+            Source::Pve => self.cfg.absolute.min(self.cfg.pve_absolute),
+        }
     }
 
     fn start_session(
         &self,
         user: &str,
-        password_hash: &str,
+        password_hash: Option<&str>,
         now: Instant,
     ) -> Result<Zeroizing<String>, UsersError> {
         let id = Zeroizing::new(hex(&random::<32>()?[..]));
+        let theirs =
+            |s: &Session| s.user == user && s.password_hash.is_some() == password_hash.is_some();
         let mut map = lock(&self.sessions);
         map.retain(|_, s| self.live(s, now));
-        while map.values().filter(|s| s.user == user).count() >= SESSIONS_PER_USER {
+        while map.values().filter(|s| theirs(s)).count() >= SESSIONS_PER_USER {
             let oldest = map
                 .iter()
-                .filter(|(_, s)| s.user == user)
+                .filter(|(_, s)| theirs(s))
                 .min_by_key(|(_, s)| s.used)
                 .map(|(k, _)| *k);
             match oldest {
@@ -165,7 +249,7 @@ impl Auth {
             digest(&id),
             Session {
                 user: user.into(),
-                password_hash: password_hash.into(),
+                password_hash: password_hash.map(Into::into),
                 created: now,
                 used: now,
             },
@@ -183,11 +267,14 @@ impl Auth {
             return Ok(None);
         };
         // The role is the file's, not the login's: a demotion is immediate.
-        let role = loaded
-            .users
-            .user(&s.user)
-            .filter(|u| u.password_hash == s.password_hash)
-            .map(|u| u.role);
+        let role = match &s.password_hash {
+            None => Some(Role::Admin),
+            Some(hash) => loaded
+                .users
+                .user(&s.user)
+                .filter(|u| u.password_hash == *hash)
+                .map(|u| u.role),
+        };
         match role {
             Some(role) if self.live(s, now) => {
                 s.used = now;
@@ -195,6 +282,7 @@ impl Auth {
                     user: s.user.clone(),
                     role,
                     via: Via::Session,
+                    source: s.source(),
                 }))
             }
             _ => {
@@ -257,6 +345,7 @@ impl Auth {
                 user: t.name.clone(),
                 role: t.role,
                 via: Via::Token,
+                source: Source::Local,
             }));
         }
         match self.cookie(headers) {
@@ -336,8 +425,9 @@ fn unauthorized() -> Response {
 
 /// Not 401: that would tell a client its credentials are no longer good.
 fn unusable() -> Response {
-    error(
+    coded(
         StatusCode::SERVICE_UNAVAILABLE,
+        "users_unusable",
         "the users file cannot be used; see the server log",
     )
 }
@@ -383,9 +473,13 @@ pub(crate) async fn require(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Credentials {
-    username: String,
-    password: Zeroizing<String>,
+    username: Option<String>,
+    password: Option<Zeroizing<String>>,
+    challenge: Option<String>,
+    tfa: Option<Zeroizing<String>>,
 }
+
+const WRONG: &str = "wrong username or password";
 
 /// One bucket per IPv4 address or IPv6 /64, the least a subscriber gets.
 fn source(peer: Option<Extension<Peer>>) -> IpAddr {
@@ -410,26 +504,44 @@ pub(crate) async fn login(
     if !auth.same_origin(&headers) {
         return error(StatusCode::FORBIDDEN, "cross-site login refused");
     }
-    let Credentials { username, password } = match body {
+    let usage = "expected JSON {\"username\", \"password\"} or {\"challenge\", \"tfa\"}";
+    let given = match body {
         Ok(Json(c)) => c,
         // Not the rejection's own text, which quotes the body.
-        Err(r) => return error(r.status(), "expected JSON {\"username\", \"password\"}"),
+        Err(r) => return error(r.status(), usage),
+    };
+    let (username, password) = match given {
+        Credentials {
+            username: Some(u),
+            password: Some(p),
+            challenge: None,
+            tfa: None,
+        } => (u, p),
+        Credentials {
+            username: None,
+            password: None,
+            challenge: Some(c),
+            tfa: Some(t),
+        } => return second_factor(&auth, from, &headers, &c, &t).await,
+        _ => return error(StatusCode::UNPROCESSABLE_ENTITY, usage),
     };
     let Ok(loaded) = auth.store.current() else {
         return unusable();
     };
     let user = loaded.users.user(&username).cloned();
+    // A local user by such a name goes first, and its password to no host.
+    if user.is_none() && !auth.pve.is_empty() {
+        if let Some(host) = username.strip_prefix("root@") {
+            return pve_login(&auth, from, &headers, host, &password).await;
+        }
+    }
     // A name that is not a user's may well be a password typed in the wrong
     // field, so it is never logged.
     let audit_name = user
         .as_ref()
         .map_or_else(|| "<unknown>".to_string(), |u| u.name.clone());
     if let Err(wait) = auth.begin_attempt(from, Instant::now()) {
-        tracing::warn!(target: "audit", user = %audit_name, %from, "login throttled");
-        let mut r = error(StatusCode::TOO_MANY_REQUESTS, "too many failed logins");
-        r.headers_mut()
-            .insert(RETRY_AFTER, HeaderValue::from(wait.as_secs().max(1)));
-        return r;
+        return throttled(&audit_name, from, wait);
     }
     let permit = tokio::time::timeout(HASH_WAIT, auth.hashes.clone().acquire_owned()).await;
     let Ok(Ok(permit)) = permit else {
@@ -449,25 +561,206 @@ pub(crate) async fn login(
     .unwrap_or(false);
     let Some(user) = user.filter(|_| checked) else {
         tracing::warn!(target: "audit", user = %audit_name, %from, "login refused");
-        return error(StatusCode::UNAUTHORIZED, "wrong username or password");
+        return error(StatusCode::UNAUTHORIZED, WRONG);
     };
     auth.refund_attempt(from);
-    if let Some(old) = auth.cookie(&headers) {
+    let hash = Some(user.password_hash.as_str());
+    open(&auth, &headers, &user.name, user.role, hash, from)
+}
+
+fn throttled(user: &str, from: IpAddr, wait: Duration) -> Response {
+    tracing::warn!(target: "audit", %user, %from, "login throttled");
+    let mut r = error(StatusCode::TOO_MANY_REQUESTS, "too many failed logins");
+    r.headers_mut()
+        .insert(RETRY_AFTER, HeaderValue::from(wait.as_secs().max(1)));
+    r
+}
+
+fn open(
+    auth: &Auth,
+    headers: &HeaderMap,
+    user: &str,
+    role: Role,
+    hash: Option<&str>,
+    from: IpAddr,
+) -> Response {
+    if let Some(old) = auth.cookie(headers) {
         auth.end_session(old);
     }
-    let started = auth.start_session(&user.name, &user.password_hash, Instant::now());
-    let cookie = started
+    let source = hash.map_or(Source::Pve, |_| Source::Local);
+    let cookie = auth
+        .start_session(user, hash, Instant::now())
         .ok()
-        .and_then(|id| auth.set_cookie(&id, auth.cfg.absolute.as_secs()));
+        .and_then(|id| auth.set_cookie(&id, auth.lifetime(source).as_secs()));
     let Some(cookie) = cookie else {
         return error(StatusCode::INTERNAL_SERVER_ERROR, "cannot start a session");
     };
-    tracing::info!(target: "audit", user = %user.name, role = %user.role, %from, "login");
+    tracing::info!(target: "audit", %user, %role, ?source, %from, "login");
     (StatusCode::NO_CONTENT, [(SET_COOKIE, cookie)]).into_response()
 }
 
+async fn pve_slot(slots: &Arc<Semaphore>) -> Option<OwnedSemaphorePermit> {
+    let got = tokio::time::timeout(PVE_WAIT, slots.clone().acquire_owned()).await;
+    got.ok()?.ok()
+}
+
+async fn pve_login(
+    auth: &Auth,
+    from: IpAddr,
+    headers: &HeaderMap,
+    host: &str,
+    password: &str,
+) -> Response {
+    let began = Instant::now();
+    let found = auth.pve.iter().position(|h| h.name == host);
+    let host = found.map(|i| &auth.pve[i]);
+    let name = host.map_or_else(|| "<unknown>".into(), |h| format!("root@{}", h.name));
+    if let Err(wait) = auth.begin_attempt(from, began) {
+        return throttled(&name, from, wait);
+    }
+    let Some(permit) = pve_slot(host.map_or(&auth.no_host, |h| &h.slots)).await else {
+        auth.refund_attempt(from);
+        return error(StatusCode::SERVICE_UNAVAILABLE, "too many logins at once");
+    };
+    let outcome = match host {
+        Some(h) if password.len() <= MAX_PASSWORD => h.login.check(password).await,
+        _ => Ok(LoginOutcome::Refused),
+    };
+    match (found, outcome) {
+        (Some(_), Ok(LoginOutcome::Accepted)) => {
+            auth.refund_attempt(from);
+            open(auth, headers, &name, Role::Admin, None, from)
+        }
+        (Some(i), Ok(LoginOutcome::NeedTfa(tfa))) => challenge(auth, from, i, tfa, &name),
+        (_, Err(e)) => pve_failed(auth, began, permit, &name, from, &e).await,
+        (_, Ok(_)) => pve_refused(auth, began, permit, &name, from, WRONG).await,
+    }
+}
+
+/// The slot is held for the wait, so that a refusal costs the same slot time
+/// whichever host was named.
+async fn pve_refused(
+    auth: &Auth,
+    began: Instant,
+    _slot: OwnedSemaphorePermit,
+    name: &str,
+    from: IpAddr,
+    msg: &'static str,
+) -> Response {
+    tracing::warn!(target: "audit", user = %name, %from, "login refused");
+    tokio::time::sleep(auth.cfg.pve_floor.saturating_sub(began.elapsed())).await;
+    error(StatusCode::UNAUTHORIZED, msg)
+}
+
+/// The attempt is not refunded: that would be unlimited tries at a host.
+async fn pve_failed(
+    auth: &Auth,
+    began: Instant,
+    _slot: OwnedSemaphorePermit,
+    name: &str,
+    from: IpAddr,
+    e: &PveError,
+) -> Response {
+    tracing::warn!(target: "audit", user = %name, %from, error = %e, "login not checked");
+    tokio::time::sleep(auth.cfg.pve_floor.saturating_sub(began.elapsed())).await;
+    coded(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "host_unreachable",
+        "that host could not be reached, or not trusted, to check the password",
+    )
+}
+
+/// Not a login, and the attempt stays counted until it is one.
+fn challenge(auth: &Auth, from: IpAddr, host: usize, tfa: TfaChallenge, name: &str) -> Response {
+    tracing::info!(target: "audit", user = %name, %from, "second factor needed");
+    let mut kinds = Vec::new();
+    if tfa.totp {
+        kinds.push("totp");
+    }
+    if tfa.recovery {
+        kinds.push("recovery");
+    }
+    if kinds.is_empty() {
+        return coded(
+            StatusCode::NOT_IMPLEMENTED,
+            "tfa_not_supported",
+            "this account's second factor is not supported here; only TOTP and recovery keys are",
+        );
+    }
+    let Ok(id) = random::<32>().map(|b| hex(&b[..])) else {
+        return error(StatusCode::INTERNAL_SERVER_ERROR, "no randomness");
+    };
+    let now = Instant::now();
+    let mut map = lock(&auth.pending);
+    map.retain(|_, p| now.duration_since(p.created) < auth.cfg.challenge_life);
+    if map.len() >= MAX_CHALLENGES {
+        if let Some(k) = map.iter().min_by_key(|(_, p)| p.created).map(|(k, _)| *k) {
+            map.remove(&k);
+        }
+    }
+    map.insert(
+        digest(&id),
+        Pending {
+            host,
+            from,
+            tfa,
+            created: now,
+        },
+    );
+    drop(map);
+    let body = json!({ "error": "second factor needed", "tfa": kinds, "challenge": id });
+    (StatusCode::UNAUTHORIZED, Json(body)).into_response()
+}
+
+async fn second_factor(
+    auth: &Auth,
+    from: IpAddr,
+    headers: &HeaderMap,
+    id: &str,
+    response: &str,
+) -> Response {
+    const REFUSED: &str = "second factor refused; sign in again";
+    let began = Instant::now();
+    if let Err(wait) = auth.begin_attempt(from, began) {
+        return throttled("<second factor>", from, wait);
+    }
+    // A local user by the host's name, or a file that can no longer be used,
+    // may have come about since the password.
+    let Ok(loaded) = auth.store.current() else {
+        return unusable();
+    };
+    // Taken before it is tried: one answer each.
+    let pending = lock(&auth.pending)
+        .remove(&digest(id))
+        .filter(|p| p.from == from && began.duration_since(p.created) < auth.cfg.challenge_life);
+    let Some(p) = pending else {
+        tracing::warn!(target: "audit", %from, "second factor refused: no such challenge");
+        return error(StatusCode::UNAUTHORIZED, REFUSED);
+    };
+    let host = &auth.pve[p.host];
+    let name = format!("root@{}", host.name);
+    let Some(permit) = pve_slot(&host.slots).await else {
+        return error(StatusCode::SERVICE_UNAVAILABLE, "too many logins at once");
+    };
+    let checked = if response.len() > MAX_TFA || loaded.users.user(&name).is_some() {
+        Ok(false)
+    } else {
+        host.login.respond(&p.tfa, response).await
+    };
+    match checked {
+        Ok(true) => {
+            // This attempt, and the password's that led to it.
+            auth.refund_attempt(from);
+            auth.refund_attempt(from);
+            open(auth, headers, &name, Role::Admin, None, from)
+        }
+        Ok(false) => pve_refused(auth, began, permit, &name, from, REFUSED).await,
+        Err(e) => pve_failed(auth, began, permit, &name, from, &e).await,
+    }
+}
+
 pub(crate) async fn whoami(Extension(who): Extension<Identity>) -> Response {
-    Json(json!({ "user": who.user, "role": who.role })).into_response()
+    Json(json!({ "user": who.user, "role": who.role, "source": who.source })).into_response()
 }
 
 pub(crate) async fn logout(
@@ -509,14 +802,14 @@ mod tests {
             .clone();
         let t0 = Instant::now();
         let idle = a.cfg.idle;
-        let id = a.start_session("user1@pve", &hash, t0).unwrap();
+        let id = a.start_session("user1@pve", Some(&hash), t0).unwrap();
         assert!(a.session(&id, t0 + idle / 2).unwrap().is_some());
         assert!(
             a.session(&id, t0 + idle).unwrap().is_some(),
             "use renews idle"
         );
         assert!(a.session(&id, t0 + idle * 2).unwrap().is_none());
-        let id = a.start_session("user1@pve", &hash, t0).unwrap();
+        let id = a.start_session("user1@pve", Some(&hash), t0).unwrap();
         let mut t = t0;
         while t + idle / 2 < t0 + a.cfg.absolute {
             t += idle / 2;
@@ -524,7 +817,7 @@ mod tests {
         }
         assert!(a.session(&id, t0 + a.cfg.absolute).unwrap().is_none());
         for _ in 0..SESSIONS_PER_USER * 2 {
-            a.start_session("user1@pve", &hash, t0).unwrap();
+            a.start_session("user1@pve", Some(&hash), t0).unwrap();
         }
         assert_eq!(lock(&a.sessions).len(), SESSIONS_PER_USER);
     }
@@ -557,5 +850,22 @@ mod tests {
         };
         assert_eq!(source(peer(1)), source(peer(2)));
         assert_ne!(source(peer(1)), source(peer(1 << 64)));
+    }
+
+    #[test]
+    fn a_pve_session_is_admin_and_ends_at_two_hours_however_used() {
+        let (_d, a) = setup();
+        let t0 = Instant::now();
+        let id = a.start_session("root@pve1", None, t0).unwrap();
+        let who = a.session(&id, t0).unwrap().unwrap();
+        assert_eq!((who.role, who.source), (Role::Admin, Source::Pve));
+        let mut t = t0;
+        while t + a.cfg.idle / 2 < t0 + PVE_ABSOLUTE {
+            t += a.cfg.idle / 2;
+            assert!(a.session(&id, t).unwrap().is_some());
+        }
+        assert!(a.session(&id, t0 + PVE_ABSOLUTE).unwrap().is_none());
+        let id = a.start_session("root@pve1", None, t0).unwrap();
+        assert!(a.session(&id, t0 + a.cfg.idle).unwrap().is_none());
     }
 }
