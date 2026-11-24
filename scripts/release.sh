@@ -122,6 +122,7 @@ publish_exit() {
 publish() {
 	local tag=$1 d=$2 v pre=() f
 	v=${tag#v}
+	[[ -z $(git -C "$root" status --porcelain) ]] || die "working tree is not clean"
 	verify "$d" "$v"
 	[[ $v == *-* ]] && pre=(--prerelease)
 	tmp=$(mktemp -d)
@@ -136,7 +137,9 @@ publish() {
 	gh release create "$tag" --draft --verify-tag --title "Concord $v" \
 		--notes-file "$tmp/notes.md" ${pre[@]+"${pre[@]}"}
 	created=$tag
-	(cd "$d" && gh release upload "$tag" -- *)
+	# Not from inside $d: gh finds the repository from the working directory,
+	# and by hand $d lies outside it.
+	gh release upload "$tag" -- "$d"/*
 	gh release download "$tag" --dir "$tmp/dl"
 	verify "$tmp/dl" "$v"
 	while read -r f; do

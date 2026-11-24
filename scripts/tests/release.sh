@@ -49,6 +49,8 @@ cat >"$T/bin/gh" <<'S'
 #!/usr/bin/env bash
 st=$T/gh; mkdir -p "$st/assets"
 echo "$*" >>"$st/log"
+# Like gh without GH_REPO: useless outside the repository.
+git rev-parse --git-dir >/dev/null 2>&1 || { echo "not a git repository" >&2; exit 1; }
 case "$1 $2" in
 api*) cat "$st/tags" 2>/dev/null; exit 0 ;;
 "release create") echo "$3" >>"$st/tags"; echo draft >"$st/state"; exit 0 ;;
@@ -57,8 +59,8 @@ api*) cat "$st/tags" 2>/dev/null; exit 0 ;;
 	for f; do
 		n=$((n + 1))
 		[[ ${FAIL_UPLOAD_AT:-} == "$n" ]] && exit 1
-		cp "$f" "$st/assets/$f"
-		[[ ${CORRUPT:-} == 1 && $n == 1 ]] && echo x >>"$st/assets/$f"
+		cp "$f" "$st/assets/${f##*/}"
+		[[ ${CORRUPT:-} == 1 && $n == 1 ]] && echo x >>"$st/assets/${f##*/}"
 	done; exit 0 ;;
 "release download") cp "$st/assets/"* "$5/" ;;
 "release edit") [[ " $* " == *" --verify-tag "* ]] || exit 1; echo published >"$st/state" ;;
