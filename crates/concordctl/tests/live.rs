@@ -67,6 +67,11 @@ async fn errors_are_reported() {
         r,
         Err(concordctl::CtlError::Server { status: 404, .. })
     ));
+    let (r, _) = ctl(&s, &["guests", "--host", "typo"]).await;
+    assert!(matches!(
+        r,
+        Err(concordctl::CtlError::Server { status: 404, .. })
+    ));
     let (r, _) = ctl("http://127.0.0.1:1", &["hosts"]).await;
     assert!(matches!(r, Err(concordctl::CtlError::Connect { .. })));
 }

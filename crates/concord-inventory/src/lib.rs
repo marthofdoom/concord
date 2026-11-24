@@ -10,10 +10,11 @@
     deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)
 )]
 
+mod config_filter;
 mod poller;
 mod types;
 
-pub use poller::{InventoryConfig, InventoryHandle, Poller, SECRET_CONFIG_KEYS};
+pub use poller::{InventoryConfig, InventoryHandle, Poller};
 pub use types::{Conflict, EstateSnapshot, Guest, Host, HostStatus, HostSummary};
 
 #[cfg(test)]

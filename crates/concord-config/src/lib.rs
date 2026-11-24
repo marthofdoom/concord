@@ -3,7 +3,8 @@
 //! The two are separate files so that the configuration can be shown, copied
 //! and serialised freely: [`Config`] has no field a secret could be in. Secrets
 //! are only ever held in [`concord_pve::Secret`], and no error from this crate
-//! carries the text of either file.
+//! carries a value
+//! from either file, or a key that does not look like a field name.
 
 #![cfg_attr(
     not(test),

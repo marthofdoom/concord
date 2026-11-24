@@ -116,7 +116,14 @@ fn read_file(path: &Path) -> Result<BTreeMap<String, Secret>, ConfigError> {
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        // The owner can rewrite the file or reopen its mode, so it has to be
+        // someone who could act as this process anyway.
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let euid = unsafe { libc::geteuid() };
+        if !trusted_owner(meta.uid(), euid) {
+            return Err(refuse("owned by neither root nor the user running Concord"));
+        }
         let mode = meta.permissions().mode() & 0o7777;
         // All three bits, not just read: whoever can write it picks the token.
         if mode & 0o077 != 0 {
@@ -145,6 +152,11 @@ fn read_file(path: &Path) -> Result<BTreeMap<String, Secret>, ConfigError> {
         ))
     })?;
     Ok(raw.into_iter().map(|(k, v)| (k, Secret::new(v))).collect())
+}
+
+#[cfg(unix)]
+pub(crate) fn trusted_owner(owner: u32, euid: u32) -> bool {
+    owner == euid || owner == 0
 }
 
 fn open(path: &Path) -> std::io::Result<File> {

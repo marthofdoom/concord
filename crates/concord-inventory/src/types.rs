@@ -93,9 +93,12 @@ pub struct Guest {
     pub tags: Vec<String>,
     /// The data is from an earlier poll: the host or node did not answer.
     pub stale: bool,
-    /// `/config` with secrets removed. Omitted from list views.
+    /// The keys of `/config` known to be safe to show. Omitted from list views.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<Map<String, Value>>,
+    /// Names of the `/config` keys left out of `config`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub config_omitted: Vec<String>,
     /// Why the per-guest detail calls failed; the list data above is still
     /// the latest known.
     #[serde(default, skip_serializing_if = "Option::is_none")]

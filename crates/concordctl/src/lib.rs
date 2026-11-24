@@ -2,6 +2,7 @@
 
 use std::fmt::Write as _;
 use std::io::Write;
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use concord_inventory::{Conflict, EstateSnapshot, Guest, HostSummary};
@@ -64,10 +65,45 @@ pub enum CtlError {
 
 /// Strips control characters: guest names and tags are chosen by whoever can
 /// create a guest, and must not be able to drive the operator's terminal.
+///
+/// Bidi overrides are removed too: they reorder what follows, so a name could
+/// make a table row read differently from what it contains.
 pub fn sanitize(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_control() { '?' } else { c })
+        .map(|c| if c.is_control() || is_bidi(c) { '?' } else { c })
         .collect()
+}
+
+fn is_bidi(c: char) -> bool {
+    matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
+/// Pretty JSON with control (C0, C1) and bidi characters written as `\u`
+/// escapes. serde_json only escapes below 0x20; raw C1 bytes can still drive a
+/// terminal. Such characters only occur inside strings, where an escape is
+/// valid and means the same character.
+fn escape_json(json: &str) -> String {
+    let mut o = String::with_capacity(json.len());
+    for c in json.chars() {
+        if (c.is_control() && c != '\n') || is_bidi(c) {
+            let _ = write!(o, "\\u{:04x}", c as u32);
+        } else {
+            o.push(c);
+        }
+    }
+    o
+}
+
+/// An error with its causes, since reqwest's top-level text is only
+/// "error sending request".
+fn chain(e: &dyn std::error::Error) -> String {
+    let mut s = e.to_string();
+    let mut cur = e.source();
+    while let Some(c) = cur {
+        let _ = write!(s, ": {c}");
+        cur = c.source();
+    }
+    s
 }
 
 async fn fetch(cli: &Cli, path: &str, query: &[(&str, &str)]) -> Result<Value, CtlError> {
@@ -75,7 +111,18 @@ async fn fetch(cli: &Cli, path: &str, query: &[(&str, &str)]) -> Result<Value, C
     // one is already installed.
     let _ = rustls::crypto::ring::default_provider().install_default();
     let url = format!("{}{}", cli.server.trim_end_matches('/'), path);
-    let resp = reqwest::Client::new()
+    // No proxy: the operator's proxy variables must not receive a request
+    // meant for the Concord server. Timeouts so a silent server cannot hang us.
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| CtlError::Connect {
+            server: cli.server.clone(),
+            reason: chain(&e),
+        })?;
+    let resp = client
         .get(&url)
         .query(query)
         .send()
@@ -83,24 +130,31 @@ async fn fetch(cli: &Cli, path: &str, query: &[(&str, &str)]) -> Result<Value, C
         .map_err(|e| CtlError::Connect {
             server: cli.server.clone(),
             // without_url: the query string is not needed in the message.
-            reason: e.without_url().to_string(),
+            reason: chain(&e.without_url()),
         })?;
     let status = resp.status();
-    let body: Value = resp
-        .json()
-        .await
-        .map_err(|e| CtlError::Decode(e.without_url().to_string()))?;
+    // Status first: an error page need not be JSON.
     if !status.is_success() {
-        let message = body
-            .get("error")
-            .and_then(Value::as_str)
-            .unwrap_or("no error message")
-            .to_string();
+        let message = match resp.json::<Value>().await {
+            Ok(b) => b
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("no error message")
+                .to_string(),
+            Err(_) => status
+                .canonical_reason()
+                .unwrap_or("no error message")
+                .to_string(),
+        };
         return Err(CtlError::Server {
             status: status.as_u16(),
             message: sanitize(&message),
         });
     }
+    let body: Value = resp
+        .json()
+        .await
+        .map_err(|e| CtlError::Decode(chain(&e.without_url())))?;
     Ok(body)
 }
 
@@ -136,7 +190,9 @@ pub async fn run(cli: &Cli, out: &mut dyn Write) -> Result<(), CtlError> {
     };
     let body = fetch(cli, &path, &query).await?;
     let text = if cli.json {
-        serde_json::to_string_pretty(&body).map_err(|e| CtlError::Decode(e.to_string()))?
+        escape_json(
+            &serde_json::to_string_pretty(&body).map_err(|e| CtlError::Decode(e.to_string()))?,
+        )
     } else {
         render(&cli.command, body)?
     };
@@ -305,6 +361,11 @@ fn render(cmd: &Command, body: Value) -> Result<String, CtlError> {
                     let _ = write!(s, "\n  {}: {}", sanitize(k), sanitize(&v.to_string()));
                 }
             }
+            if !r.guest.config_omitted.is_empty() {
+                // Said out loud, so a missing key is not read as an unset one.
+                let keys = r.guest.config_omitted.join(", ");
+                let _ = write!(s, "\nwithheld config: {}", sanitize(&keys));
+            }
             s
         }
         Command::Estate => {
@@ -334,6 +395,20 @@ mod tests {
     #[test]
     fn sanitize_removes_control_characters() {
         assert_eq!(sanitize("a\x1b[31mb\nc"), "a?[31mb?c");
+    }
+
+    #[test]
+    fn sanitize_removes_bidi_overrides() {
+        assert_eq!(sanitize("a\u{202e}b"), "a?b");
+    }
+
+    #[test]
+    fn json_escapes_c1_and_bidi_but_stays_valid() {
+        let v = serde_json::json!({"name": "a\u{9b}b\u{202e}c"});
+        let out = escape_json(&serde_json::to_string_pretty(&v).unwrap());
+        assert!(!out.contains('\u{9b}') && !out.contains('\u{202e}'));
+        let back: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(back, v);
     }
 
     #[test]

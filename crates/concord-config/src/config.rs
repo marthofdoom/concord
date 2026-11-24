@@ -183,7 +183,15 @@ fn decode<T: DeserializeOwned>(at: &str, value: toml::Value) -> Result<T, Config
         // Serde quotes a string of the wrong type, and a credential pasted into
         // the wrong field should not reach a log.
         let msg = e.message();
-        let reason = if msg.starts_with("invalid type") || msg.starts_with("invalid value") {
+        let reason = if let Some(rest) = msg.strip_prefix("unknown field `") {
+            // From the right, because the key itself may contain anything.
+            match rest.rsplit_once("`, expected ") {
+                Some((k, want)) if plausible_field(k) => {
+                    format!("unknown field `{k}`, expected {want}")
+                }
+                _ => "unknown field (name withheld, it may be a misplaced credential)".to_string(),
+            }
+        } else if msg.starts_with("invalid type") || msg.starts_with("invalid value") {
             match msg.rsplit_once(", expected ") {
                 Some((_, want)) => format!("wrong type, expected {want}"),
                 None => "wrong type".to_string(),
@@ -193,6 +201,12 @@ fn decode<T: DeserializeOwned>(at: &str, value: toml::Value) -> Result<T, Config
         };
         invalid(&field, reason)
     })
+}
+
+/// Whether a key looks like a mistyped field name, and so can be repeated. A
+/// token secret, with its digits, never does.
+fn plausible_field(key: &str) -> bool {
+    key.len() <= 24 && key.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
 }
 
 fn check_secs(field: &str, secs: u64) -> Result<(), ConfigError> {

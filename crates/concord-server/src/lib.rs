@@ -2,6 +2,8 @@
 //!
 //! Split from the binary so tests drive the real router in-process.
 
+mod host_guard;
+
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -11,6 +13,8 @@ use concord_core::GuestKind;
 use concord_inventory::{Conflict, EstateSnapshot, Guest, HostSummary, InventoryHandle};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+
+pub use host_guard::guard_host;
 
 /// Everything a handler may read. Handlers see the inventory snapshot, never a
 /// PVE client.
@@ -116,6 +120,13 @@ async fn guests(State(s): State<AppState>, Query(q): Query<GuestQuery>) -> Respo
         Some("lxc") => Some(GuestKind::Lxc),
         Some(_) => return error(StatusCode::BAD_REQUEST, "kind must be `qemu` or `lxc`"),
     };
+    // An unknown host is an error, not an empty list: a typo must not look
+    // like a host with no guests.
+    if let Some(n) = &q.host {
+        if !snap.hosts.iter().any(|h| h.name == *n) {
+            return error(StatusCode::NOT_FOUND, "no such host");
+        }
+    }
     let rows = snap
         .hosts
         .iter()
@@ -127,6 +138,7 @@ async fn guests(State(s): State<AppState>, Query(q): Query<GuestQuery>) -> Respo
             // The list is for scanning; config is fetched per guest.
             let mut guest = g.clone();
             guest.config = None;
+            guest.config_omitted.clear();
             GuestRow {
                 host: h.name.clone(),
                 guest,

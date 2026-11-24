@@ -25,7 +25,7 @@ anyhow.workspace = true
 axum = "0.8"
 serde.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
@@ -33,3 +33,4 @@ tracing-subscriber.workspace = true
 concord-pve = { path = "../concord-pve", features = ["mock", "capture"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+tokio = { workspace = true, features = ["net", "io-util"] }

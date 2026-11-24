@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Display;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -11,12 +11,8 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use tokio::sync::watch;
 
+use crate::config_filter;
 use crate::types::{Conflict, EstateSnapshot, Guest, Host, HostStatus};
-
-/// Config keys that can hold credentials or free text an operator typed in
-/// confidence. The snapshot is served over an API with no auth yet, so these
-/// never enter it.
-pub const SECRET_CONFIG_KEYS: &[&str] = &["cipassword", "sshkeys", "description"];
 
 /// Longest error text kept in the snapshot.
 const MAX_ERROR_CHARS: usize = 300;
@@ -225,6 +221,8 @@ async fn poll_host_inner(
     };
 
     let mut listed: Vec<(String, GuestKind, Item)> = Vec::new();
+    // (node, kind) lists that had an entry with no usable vmid.
+    let mut incomplete: Vec<(String, GuestKind)> = Vec::new();
     for n in &live {
         // Both lists or neither: qemu without lxc would make every container
         // look deleted.
@@ -232,20 +230,66 @@ async fn poll_host_inner(
             list(client, &n.node, GuestKind::Qemu),
             list(client, &n.node, GuestKind::Lxc)
         );
-        for item in q? {
-            listed.push((n.node.clone(), GuestKind::Qemu, item));
-        }
-        for item in l? {
-            listed.push((n.node.clone(), GuestKind::Lxc, item));
+        for (kind, res) in [(GuestKind::Qemu, q), (GuestKind::Lxc, l)] {
+            let (items, bad) = res?;
+            if bad > 0 {
+                incomplete.push((n.node.clone(), kind));
+            }
+            for item in items {
+                listed.push((n.node.clone(), kind, item));
+            }
         }
     }
 
+    // Config survives a failed config call: absence of an answer is not
+    // evidence the config is gone.
+    let prev_cfg: HashMap<(String, &'static str, u32), FilteredConfig> = prev
+        .guests
+        .iter()
+        .filter_map(|g| {
+            g.config
+                .clone()
+                .map(|c| (c, g.config_omitted.clone()))
+                .map(|c| ((g.node.clone(), kind_segment(g.kind), g.vmid), c))
+        })
+        .collect();
+
     let results: Vec<Result<Guest, PveError>> = stream::iter(listed)
-        .map(|(node, kind, item)| detail(client.clone(), node, kind, item))
+        .map(|(node, kind, item)| {
+            let old = item.vmid.and_then(|v| {
+                prev_cfg
+                    .get(&(node.clone(), kind_segment(kind), v))
+                    .cloned()
+            });
+            detail(client.clone(), node, kind, item, old)
+        })
         .buffer_unordered(conc)
         .collect()
         .await;
     let mut guests = results.into_iter().collect::<Result<Vec<_>, _>>()?;
+
+    // A list entry with no usable vmid might have been any guest, so the
+    // guests we did not see on that list are kept stale rather than dropped.
+    let mut note = None;
+    for (node, kind) in &incomplete {
+        let fresh: Vec<u32> = guests
+            .iter()
+            .filter(|g| g.node == *node && g.kind == *kind)
+            .map(|g| g.vmid)
+            .collect();
+        guests.extend(
+            prev.guests
+                .iter()
+                .filter(|g| g.node == *node && g.kind == *kind && !fresh.contains(&g.vmid))
+                .map(|g| {
+                    let mut g = g.clone();
+                    g.stale = true;
+                    g
+                }),
+        );
+        note =
+            Some("a guest list entry had no usable vmid; unlisted guests kept stale".to_string());
+    }
 
     // An offline cluster node's guests are kept as last seen, stale.
     for n in &down {
@@ -261,24 +305,77 @@ async fn poll_host_inner(
         name: prev.name.clone(),
         node: live.first().map(|n| n.node.clone()),
         status: HostStatus::Ok,
-        error: None,
+        error: note,
         pve_version,
         last_success: Some(now_secs()),
         guests,
     })
 }
 
-/// A list or `status/current` entry. Everything PVE may omit is optional.
+/// A number, or a numeric string: PVE's `check_type` hands numbers back as
+/// the raw config string for some fields (LXC `cpus` is `"2"` when it comes
+/// from `cores`). Anything else is "not known", never an error: one odd field
+/// must not take a host out of the inventory.
+fn as_f64(v: &Value) -> Option<f64> {
+    match v {
+        Value::Number(n) => n.as_f64(),
+        Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    }
+    .filter(|f| f.is_finite())
+}
+
+fn as_u64(v: &Value) -> Option<u64> {
+    match v {
+        Value::Number(n) => n.as_u64().or_else(|| {
+            n.as_f64()
+                .filter(|f| f.is_finite() && *f >= 0.0 && f.fract() == 0.0 && *f < 1.8e19)
+                .map(|f| f as u64)
+        }),
+        Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+fn lenient_f64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<f64>, D::Error> {
+    Ok(as_f64(&Value::deserialize(d)?))
+}
+
+fn lenient_u64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    Ok(as_u64(&Value::deserialize(d)?))
+}
+
+fn lenient_vmid<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u32>, D::Error> {
+    Ok(as_u64(&Value::deserialize(d)?).and_then(|v| u32::try_from(v).ok()))
+}
+
+fn lenient_string<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(match Value::deserialize(d)? {
+        Value::String(s) => Some(s),
+        _ => None,
+    })
+}
+
+/// A list or `status/current` entry. Everything PVE may omit is optional, and
+/// every field decodes leniently (see [`as_f64`]).
 #[derive(Clone, Debug, Default, Deserialize)]
 struct Item {
+    #[serde(default, deserialize_with = "lenient_vmid")]
     vmid: Option<u32>,
+    #[serde(default, deserialize_with = "lenient_string")]
     name: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
     status: Option<String>,
+    #[serde(default, deserialize_with = "lenient_f64")]
     cpus: Option<f64>,
+    #[serde(default, deserialize_with = "lenient_u64")]
     maxmem: Option<u64>,
+    #[serde(default, deserialize_with = "lenient_u64")]
     mem: Option<u64>,
+    #[serde(default, deserialize_with = "lenient_u64")]
     uptime: Option<u64>,
     template: Option<Value>,
+    #[serde(default, deserialize_with = "lenient_string")]
     tags: Option<String>,
 }
 
@@ -289,19 +386,23 @@ fn kind_segment(kind: GuestKind) -> &'static str {
     }
 }
 
+/// The usable entries, and how many had no usable vmid.
 async fn list(
     client: &Arc<dyn PveApi>,
     node: &str,
     kind: GuestKind,
-) -> Result<Vec<Item>, PveError> {
+) -> Result<(Vec<Item>, usize), PveError> {
     let path = api_path(&["nodes", node, kind_segment(kind)])?;
     let v = client.request(Method::Get, &path, &[]).await?;
-    let items: Vec<Item> =
-        serde_json::from_value(v).map_err(|e| PveError::Decode(e.to_string()))?;
-    if items.iter().any(|i| i.vmid.is_none()) {
-        return Err(PveError::Decode("guest list entry without vmid".into()));
-    }
-    Ok(items)
+    let raw: Vec<Value> = serde_json::from_value(v).map_err(|e| PveError::Decode(e.to_string()))?;
+    let total = raw.len();
+    let items: Vec<Item> = raw
+        .into_iter()
+        .map(|v| serde_json::from_value::<Item>(v).unwrap_or_default())
+        .filter(|i| i.vmid.is_some())
+        .collect();
+    let bad = total - items.len();
+    Ok((items, bad))
 }
 
 fn truthy(v: &Option<Value>) -> bool {
@@ -322,20 +423,18 @@ fn parse_tags(t: &Option<String>) -> Vec<String> {
         .collect()
 }
 
+/// What may be shown of a config, and the names of the keys left out.
+type FilteredConfig = (Map<String, Value>, Vec<String>);
+
 async fn fetch_config(
     client: &Arc<dyn PveApi>,
     node: &str,
     kind: GuestKind,
     vmid: &str,
-) -> Result<Map<String, Value>, PveError> {
+) -> Result<FilteredConfig, PveError> {
     let path = api_path(&["nodes", node, kind_segment(kind), vmid, "config"])?;
     match client.request(Method::Get, &path, &[]).await? {
-        Value::Object(mut m) => {
-            for k in SECRET_CONFIG_KEYS {
-                m.remove(*k);
-            }
-            Ok(m)
-        }
+        Value::Object(m) => Ok(config_filter::filter(m)),
         _ => Err(PveError::Decode("config is not an object".into())),
     }
 }
@@ -359,6 +458,7 @@ async fn detail(
     node: String,
     kind: GuestKind,
     item: Item,
+    old_config: Option<FilteredConfig>,
 ) -> Result<Guest, PveError> {
     // `list` already rejected a missing vmid; this keeps the type honest.
     let vmid = item
@@ -370,12 +470,16 @@ async fn detail(
         fetch_status(&client, &node, kind, &vmid_s)
     );
     let mut errs = Vec::new();
-    let config = match cfg {
+    let filtered = match cfg {
         Ok(m) => Some(m),
         Err(e) => {
             errs.push(format!("config: {}", clean(e)));
-            None
+            old_config
         }
+    };
+    let (config, config_omitted) = match filtered {
+        Some((kept, omitted)) => (Some(kept), omitted),
+        None => (None, Vec::new()),
     };
     // status/current is fresher than the list, so it wins where it has a value.
     let cur = match st {
@@ -402,6 +506,7 @@ async fn detail(
         tags: parse_tags(&cur.tags.or(item.tags)),
         stale: false,
         config,
+        config_omitted,
         detail_error: if errs.is_empty() {
             None
         } else {

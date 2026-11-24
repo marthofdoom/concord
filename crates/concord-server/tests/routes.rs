@@ -83,8 +83,10 @@ async fn guest_list_filters_and_omits_config() {
     assert_eq!(v["guests"].as_array().map(Vec::len), Some(3));
     let (_, v) = get(&a, "/api/v1/guests?kind=qemu&status=running").await;
     assert_eq!(v["guests"].as_array().map(Vec::len), Some(1));
-    let (_, v) = get(&a, "/api/v1/guests?host=nope").await;
-    assert_eq!(v["guests"].as_array().map(Vec::len), Some(0));
+    let (s, _) = get(&a, "/api/v1/guests?host=nope").await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (_, v) = get(&a, "/api/v1/guests?host=h1").await;
+    assert_eq!(v["guests"].as_array().map(Vec::len), Some(5));
     let (s, _) = get(&a, "/api/v1/guests?kind=bogus").await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
 }

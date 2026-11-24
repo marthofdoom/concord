@@ -169,6 +169,34 @@ fn the_malformed_field_is_named() {
 }
 
 #[test]
+fn an_implausible_unknown_key_is_not_repeated() {
+    for key in [
+        format!("user1@pve!token-1={SECRET}"),
+        SECRET.to_string(),
+        format!("a`, expected {SECRET}"),
+        "a".repeat(40),
+    ] {
+        for text in [
+            format!("\"{key}\" = 'x'\n{EXAMPLE}"),
+            swap("[budget]", &format!("[budget]\n\"{key}\" = 1")),
+            swap_second("name =", &format!("\"{key}\" = 1\nname =")),
+            swap("[budget]", &format!("[\"{key}\"]\nx = 1\n[budget]")),
+        ] {
+            let e = err(&text);
+            assert!(e.contains("name withheld") && !e.contains(&key), "{e}");
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn only_this_user_or_root_may_own_the_secrets_file() {
+    use crate::secrets::trusted_owner;
+    assert!(trusted_owner(1000, 1000) && trusted_owner(0, 1000) && trusted_owner(0, 0));
+    assert!(!trusted_owner(1001, 1000) && !trusted_owner(1000, 0));
+}
+
+#[test]
 fn colliding_override_variables_are_refused() {
     let text = swap("\"pve1\"", "\"pve-a\"").replace("\"pve2\"", "\"pve.a\"");
     assert!(err(&text).contains("CONCORD_TOKEN_PVE_A"));

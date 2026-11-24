@@ -297,8 +297,10 @@ async fn secret_config_keys_are_stripped() {
     let s = snap(&h);
     let cfgmap = s.hosts[0].guests[0].config.as_ref().expect("config");
     assert!(cfgmap.contains_key("memory"));
-    for k in SECRET_CONFIG_KEYS {
-        assert!(!cfgmap.contains_key(*k), "{k} leaked");
+    let omitted = &s.hosts[0].guests[0].config_omitted;
+    for k in ["cipassword", "sshkeys", "description"] {
+        assert!(!cfgmap.contains_key(k), "{k} leaked");
+        assert!(omitted.iter().any(|o| o == k), "{k} dropped silently");
     }
     let text = serde_json::to_string(&*s).expect("json");
     assert!(!text.contains("hunter2") && !text.contains("fake-public-key"));
@@ -364,4 +366,109 @@ async fn offline_cluster_node_guests_go_stale() {
     let g2 = host.guests.iter().find(|g| g.vmid == 2).expect("2");
     assert!(!g1.stale);
     assert!(g2.stale);
+}
+
+#[tokio::test]
+async fn string_and_garbage_numbers_do_not_fail_the_host() {
+    let m = base(nodes_json(&[("n1", "online")]))
+        .on(Method::Get, "/nodes/n1/qemu", json!([]))
+        .on(
+            Method::Get,
+            "/nodes/n1/lxc",
+            json!([
+                {"vmid":"5","status":"running","cpus":"2","maxmem":"1024","mem":"x","uptime":[1],"name":7},
+                {"vmid":6,"cpus":"0.5","status":"stopped"},
+                {"vmid":7,"cpus":{"a":1}}
+            ]),
+        );
+    let m = guest(
+        guest(
+            guest(m, "n1", "lxc", 5, "running"),
+            "n1",
+            "lxc",
+            6,
+            "stopped",
+        ),
+        "n1",
+        "lxc",
+        7,
+        "stopped",
+    );
+    // Detail calls also answer with strings for numbers.
+    let (mut p, h) = Poller::new(vec![("a".into(), arc(m))], cfg());
+    p.run_cycle().await;
+    let s = snap(&h);
+    let host = &s.hosts[0];
+    assert_eq!(host.status, HostStatus::Ok);
+    assert_eq!(host.guests.len(), 3);
+    let g5 = &host.guests[0];
+    assert_eq!((g5.vmid, g5.cpus, g5.maxmem), (5, Some(2.0), Some(1024)));
+    assert_eq!((g5.mem, g5.uptime, g5.name.clone()), (None, None, None));
+    assert_eq!(host.guests[1].cpus, Some(0.5));
+    assert_eq!(host.guests[2].cpus, None);
+}
+
+#[tokio::test]
+async fn unusable_list_entry_keeps_unlisted_guests_stale() {
+    let m = base(nodes_json(&[("n1", "online")]))
+        .on(
+            Method::Get,
+            "/nodes/n1/qemu",
+            json!([{"vmid":1,"status":"running"},{"vmid":2,"status":"running"}]),
+        )
+        .on(
+            Method::Get,
+            "/nodes/n1/qemu",
+            json!([{"vmid":1,"status":"running"},{"name":"no id"}]),
+        )
+        .on(Method::Get, "/nodes/n1/lxc", json!([]));
+    let m = guest(
+        guest(m, "n1", "qemu", 1, "running"),
+        "n1",
+        "qemu",
+        2,
+        "running",
+    );
+    let (mut p, h) = Poller::new(vec![("a".into(), arc(m))], cfg());
+    p.run_cycle().await;
+    p.run_cycle().await;
+    let s = snap(&h);
+    let host = &s.hosts[0];
+    assert_eq!(host.guests.len(), 2);
+    assert!(!host.guests[0].stale);
+    assert!(host.guests[1].stale && host.guests[1].vmid == 2);
+    assert!(host.error.is_some());
+}
+
+#[tokio::test]
+async fn failed_config_call_keeps_last_known_config() {
+    let m = base(nodes_json(&[("n1", "online")]))
+        .on(
+            Method::Get,
+            "/nodes/n1/qemu",
+            json!([{"vmid":1,"status":"running"}]),
+        )
+        .on(Method::Get, "/nodes/n1/lxc", json!([]))
+        .on(
+            Method::Get,
+            "/nodes/n1/qemu/1/config",
+            json!({"memory": 512}),
+        )
+        .on_err(Method::Get, "/nodes/n1/qemu/1/config", PveError::Timeout)
+        .on(
+            Method::Get,
+            "/nodes/n1/qemu/1/status/current",
+            json!({"status":"running"}),
+        );
+    let (mut p, h) = Poller::new(vec![("a".into(), arc(m))], cfg());
+    p.run_cycle().await;
+    p.run_cycle().await;
+    let s = snap(&h);
+    let g = &s.hosts[0].guests[0];
+    assert!(!g.stale);
+    assert!(g.config.as_ref().is_some_and(|c| c.contains_key("memory")));
+    assert!(g
+        .detail_error
+        .as_deref()
+        .is_some_and(|e| e.contains("config")));
 }
