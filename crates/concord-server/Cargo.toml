@@ -25,7 +25,7 @@ anyhow.workspace = true
 argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash"] }
 axum = "0.8"
 clap = { version = "4", features = ["derive", "env"] }
-getrandom = "0.2"
+getrandom = "0.4"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio", "service"] }
 rcgen = "0.13"

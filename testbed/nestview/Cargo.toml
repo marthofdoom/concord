@@ -24,7 +24,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 # Session ids and audit request ids from the OS RNG. Already in the tree
 # through ring (same 0.2 line), so no new crate.
-getrandom = "0.2"
+getrandom = "0.4"
 # Passphrase digest and constant-time compare, plus wiping secret buffers.
 # All three are already in the tree through concord-pve.
 sha2 = "0.10"
