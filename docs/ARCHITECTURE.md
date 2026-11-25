@@ -373,10 +373,11 @@ whatever the policy says.
 
 Every update starts from a point it can return to. That is a snapshot in
 function, not PVE's snapshot feature, which is unavailable to any container with
-a bind mount and lost when a container is destroyed. It has two parts, both
+a bind mount and lost when a container is destroyed. It has three parts, all
 required: the **previous root volume and settings are kept**, attached to the
-guest as an unused volume until the update is committed, and the guest has a
-**recent backup**. A guest for which either cannot be had is not auto-updated.
+guest as an unused volume until the update is committed; the guest has a
+**recent backup**; and its **configuration bind mounts are copied**. A guest for
+which any of these cannot be had is not auto-updated.
 
 The guest is never destroyed. The new image is created as a scratch container,
 its root volume is reassigned to the guest, and one configuration change swaps
@@ -385,9 +386,18 @@ failure. Identity, mounts and raw settings therefore stay in place. An image
 whose user, working directory or stop signal differs from the guest's is
 refused, because PVE's API cannot change those.
 
-Swapping back does not restore data in mounted volumes or bind mounts. PVE
-backups skip bind mounts, so a guest that has them is updated only after the
-operator has confirmed that once for that guest.
+Bind mounts are the normal case, not an exception: they are where OCI guests
+usually keep their configuration, and a new version may migrate it in a way the
+old one cannot read. PVE backups skip them, so the restore point covers them
+itself. Each bind is either *configuration*, copied while the guest is stopped
+and put back with the old root volume on rollback, or *bulk data* (a media
+library, say), which Concord leaves alone. A read-only bind needs no copy. Where
+it is not clear which a bind is, it is asked once and remembered, never guessed.
+
+Host paths cannot be read through PVE's API, so copying them is the agent's job.
+Until the agent can do it, a guest with a configuration bind is not auto-updated.
+Volumes attached to the guest are covered by the backup, not by the swap; one
+that the backup leaves out counts as not protected.
 
 ## Design review
 
@@ -428,7 +438,7 @@ hypervisors and no witness. See [Recovery](#recovery).
 **5. "Automatically fixing file layouts and binds" is the riskiest sentence in
 the design.** Automated remediation that moves an operator's data is how data
 is lost. Constrained to a restore point first, roll-back-on-failure, and never
-destructive without both parts of it (§7).
+destructive without every part of it (§7).
 
 **6. Licence posture is clean, but trademark is separate.** Driving the public
 HTTP API creates no derivative work; AGPL-3.0-or-later matches PVE's own
