@@ -704,11 +704,10 @@ fn source(key: &str, v: &str) -> Result<MountSource, Refusal> {
         && s.last().is_some_and(u8::is_ascii_alphanumeric)
         && s.iter()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'));
-    // A leading slash would be a URL, or a path with a stray prefix.
-    let bad_volume = volume.is_empty()
-        || volume.starts_with('/')
-        || volume.chars().any(char::is_whitespace)
-        || volume.split('/').any(|c| c == "." || c == "..");
+    // A leading slash would be a URL, or a path with a stray prefix. Any other
+    // empty component would let two spellings of one volume look distinct.
+    let bad_volume = volume.chars().any(char::is_whitespace)
+        || volume.split('/').any(|c| matches!(c, "" | "." | ".."));
     if !valid || bad_volume {
         return Err(ambiguous());
     }

@@ -49,7 +49,8 @@ pub enum Refusal {
     Template,
     #[error("the config is a snapshot's, not the container's current one")]
     SnapshotConfig,
-    #[error("{key} has a pending change")]
+    // Quoted because the key is the server's text, not checked against the schema.
+    #[error("{key:?} has a pending change")]
     PendingChange { key: String },
     #[error("pending changes were not checked; the config alone does not show them")]
     PendingUnknown,

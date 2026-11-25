@@ -685,3 +685,30 @@ fn generated_damage_is_never_dropped() {
         }
     }
 }
+
+#[test]
+fn two_spellings_of_a_volume_are_refused() {
+    for v in ["st:100//v", "st:100/v/", "st:/100/v", "st:"] {
+        assert_eq!(
+            reasons(&with("mp0", json!(format!("{v},mp=/x")))),
+            [Refusal::AmbiguousSource { key: "mp0".into() }],
+            "{v}"
+        );
+    }
+}
+
+#[test]
+fn a_hostile_pending_key_is_quoted() {
+    let r = Refusal::PendingChange {
+        key: "\u{1b}[2Jx\nroot".into(),
+    };
+    assert!(!r.to_string().chars().any(char::is_control));
+}
+
+#[test]
+fn every_repeat_of_an_option_is_refused_once() {
+    let n = 50_000;
+    let raw = format!("st:100/v,{}{}", "acl=1,".repeat(n), "mp=/x,".repeat(n));
+    // Two first occurrences are legitimate; the rest are duplicates.
+    assert_eq!(reasons(&with("mp0", json!(raw))).len(), 2 * n - 2);
+}

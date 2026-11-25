@@ -185,6 +185,8 @@ impl Property {
                     key: key(),
                     option: name,
                 });
+                // Already refused; keeping it would make this check quadratic.
+                continue;
             }
             if let Err(expected) = check(kind, value) {
                 refusals.push(Refusal::BadOption {
