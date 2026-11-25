@@ -28,7 +28,7 @@ clap = { version = "4", features = ["derive", "env"] }
 getrandom = "0.2"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio", "service"] }
-rcgen = "0.13"
+rcgen = "0.14"
 rpassword = "7"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde.workspace = true

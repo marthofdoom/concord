@@ -45,6 +45,6 @@ zeroize = { version = "1", features = ["serde"] }
 
 [dev-dependencies]
 concord-pve = { path = ".", features = ["mock", "capture"] }
-rcgen = "0.13"
+rcgen = "0.14"
 tokio = { workspace = true, features = ["macros", "rt", "test-util", "net", "io-util"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
