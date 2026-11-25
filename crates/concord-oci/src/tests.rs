@@ -709,6 +709,9 @@ fn a_hostile_pending_key_is_quoted() {
 fn every_repeat_of_an_option_is_refused_once() {
     let n = 50_000;
     let raw = format!("st:100/v,{}{}", "acl=1,".repeat(n), "mp=/x,".repeat(n));
+    let start = std::time::Instant::now();
     // Identical reasons are reported once, so one for `acl` and one for `mp`.
     assert_eq!(reasons(&with("mp0", json!(raw))).len(), 2);
+    // Keeping the repeats gives the same reasons, but takes over 15 s here.
+    assert!(start.elapsed().as_secs() < 8);
 }

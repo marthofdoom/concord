@@ -371,10 +371,23 @@ whatever the policy says.
 
 ### 7. OCI guest updates
 
-Pull the new image, **snapshot the guest**, diff the declared volume and bind
-layout against the running one, apply the migration, start, health-check, and
-roll back to the snapshot on failure. The snapshot is a hard precondition: a
-guest that cannot be snapshotted is not auto-updated.
+Every update starts from a point it can return to. That is a snapshot in
+function, not PVE's snapshot feature, which is unavailable to any container with
+a bind mount and lost when a container is destroyed. It has two parts, both
+required: the **previous root volume and settings are kept**, attached to the
+guest as an unused volume until the update is committed, and the guest has a
+**recent backup**. A guest for which either cannot be had is not auto-updated.
+
+The guest is never destroyed. The new image is created as a scratch container,
+its root volume is reassigned to the guest, and one configuration change swaps
+the two volumes; the guest reboots, is health-checked, and is swapped back on
+failure. Identity, mounts and raw settings therefore stay in place. An image
+whose user, working directory or stop signal differs from the guest's is
+refused, because PVE's API cannot change those.
+
+Swapping back does not restore data in mounted volumes or bind mounts. PVE
+backups skip bind mounts, so a guest that has them is updated only after the
+operator has confirmed that once for that guest.
 
 ## Design review
 
@@ -414,8 +427,8 @@ hypervisors and no witness. See [Recovery](#recovery).
 
 **5. "Automatically fixing file layouts and binds" is the riskiest sentence in
 the design.** Automated remediation that moves an operator's data is how data
-is lost. Constrained to snapshot-first, roll-back-on-failure, and never
-destructive without a verified snapshot (§7).
+is lost. Constrained to a restore point first, roll-back-on-failure, and never
+destructive without both parts of it (§7).
 
 **6. Licence posture is clean, but trademark is separate.** Driving the public
 HTTP API creates no derivative work; AGPL-3.0-or-later matches PVE's own
