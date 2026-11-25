@@ -7,6 +7,7 @@ members = [
     "crates/concord-agent",
     "crates/concord-pve",
     "crates/concord-inventory",
+    "crates/concord-oci",
     "crates/concordctl",
     "testbed/nestview",
 ]

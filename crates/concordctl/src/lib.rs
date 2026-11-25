@@ -1,12 +1,14 @@
 //! `concordctl`: a thin client for the Concord API. It never talks to PVE.
+//! `layout` is the exception: it reads files, and talks to nothing.
 
 use std::fmt::Write as _;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use concord_inventory::{Conflict, EstateSnapshot, Guest, HostSummary};
+use concord_oci::{ConfigSource, EnvVisibility, ImageCandidate, Layout, MountSource, Property};
 use concord_pve::{pinned_client_config, Fingerprint};
 use serde::Deserialize;
 use serde_json::Value;
@@ -61,6 +63,21 @@ pub enum Command {
     Guest { host: String, vmid: u32 },
     /// The whole inventory snapshot.
     Estate,
+    /// How Concord reads a container's config, from a file. Values are not shown.
+    Layout {
+        /// The config, as `pvesh get /nodes/NODE/lxc/VMID/config` prints it
+        /// with `--output-format json`.
+        #[arg(long)]
+        file: PathBuf,
+        /// The same for `.../pending`. Without it the config is refused: it
+        /// does not itself show pending changes.
+        #[arg(long)]
+        pending: Option<PathBuf>,
+        /// State that whoever fetched the files holds VM.Config.Options, so an
+        /// absent `env` means there is none.
+        #[arg(long)]
+        env_visible: bool,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -76,6 +93,8 @@ pub enum CtlError {
     Decode(String),
     #[error("output failed: {0}")]
     Output(String),
+    #[error("{0} refused:\n{1}")]
+    Refused(String, String),
 }
 
 /// Strips control characters: guest names and tags are chosen by whoever can
@@ -252,6 +271,19 @@ fn decode<T: for<'de> Deserialize<'de>>(v: Value) -> Result<T, CtlError> {
 /// Runs one command, writing its output to `out`.
 pub async fn run(cli: &Cli, out: &mut dyn Write) -> Result<(), CtlError> {
     let (path, query): (String, Vec<(&str, &str)>) = match &cli.command {
+        Command::Layout {
+            file,
+            pending,
+            env_visible,
+        } => {
+            let layout = read_layout(file, pending.as_deref(), *env_visible)?;
+            let text = if cli.json {
+                escape_json(&format!("{:#}", layout_json(&layout)))
+            } else {
+                layout_table(&layout)
+            };
+            return writeln!(out, "{text}").map_err(|e| CtlError::Output(e.to_string()));
+        }
         Command::Version => ("/api/v1/version".into(), vec![]),
         Command::Hosts => ("/api/v1/hosts".into(), vec![]),
         Command::Estate => ("/api/v1/estate".into(), vec![]),
@@ -284,6 +316,122 @@ pub async fn run(cli: &Cli, out: &mut dyn Write) -> Result<(), CtlError> {
         render(&cli.command, body)?
     };
     writeln!(out, "{text}").map_err(|e| CtlError::Output(e.to_string()))
+}
+
+fn read_json(path: &Path) -> Result<Value, CtlError> {
+    let config = |e: String| CtlError::Config(sanitize(&format!("{}: {e}", path.display())));
+    let text = Zeroizing::new(std::fs::read(path).map_err(|e| config(e.to_string()))?);
+    // Only the position: serde's message can quote the text.
+    serde_json::from_slice(&text).map_err(|e| {
+        config(format!(
+            "not JSON (line {}, column {})",
+            e.line(),
+            e.column()
+        ))
+    })
+}
+
+fn read_layout(file: &Path, pending: Option<&Path>, env_visible: bool) -> Result<Layout, CtlError> {
+    let config = read_json(file)?;
+    let pending = pending.map(read_json).transpose()?;
+    Layout::parse(ConfigSource {
+        config: &config,
+        pending: pending.as_ref(),
+        env: if env_visible {
+            EnvVisibility::Established
+        } else {
+            EnvVisibility::Unknown
+        },
+    })
+    .map_err(|r| {
+        let reasons: Vec<String> = r
+            .reasons()
+            .iter()
+            .map(|r| sanitize(&format!("  {r}")))
+            .collect();
+        CtlError::Refused(sanitize(&file.display().to_string()), reasons.join("\n"))
+    })
+}
+
+/// Key, class and option names of everything carried. Never a value: any of
+/// them may hold a credential.
+fn layout_rows(l: &Layout) -> Vec<[String; 3]> {
+    let names = |p: &Property| {
+        let names: Vec<&str> = p.options().iter().map(|o| o.name).collect();
+        names.join(",")
+    };
+    let row = |key: String, class: &str, options: String| [key, class.to_string(), options];
+    let mut rows = Vec::new();
+    for m in l.mounts() {
+        let class = match m.source {
+            MountSource::Volume(_) => "storage volume: preserve",
+            MountSource::Bind(_) => "bind mount: declare again",
+            MountSource::Device(_) => "device: declare again",
+        };
+        rows.push(row(m.slot.key(), class, names(&m.property)));
+    }
+    for (i, p) in l.nets() {
+        rows.push(row(format!("net{i}"), "network", names(p)));
+    }
+    for (i, p) in l.devs() {
+        rows.push(row(format!("dev{i}"), "passthrough", names(p)));
+    }
+    for (i, _) in l.unused() {
+        rows.push(row(
+            format!("unused{i}"),
+            "unused volume: preserve",
+            String::new(),
+        ));
+    }
+    for (i, r) in l.raw_lxc().iter().enumerate() {
+        rows.push(row(format!("lxc[{i}]"), "raw line", r.key.clone()));
+    }
+    for key in l.keys() {
+        if l.setting(&key).is_some() {
+            rows.push(row(key, "setting", String::new()));
+        } else if key == "features" {
+            rows.push(row(
+                key,
+                "setting",
+                l.features().map(names).unwrap_or_default(),
+            ));
+        }
+    }
+    for c in l.image_candidates() {
+        let key = match c {
+            ImageCandidate::Entrypoint(_) => "entrypoint".to_string(),
+            ImageCandidate::Env(_) => "env".to_string(),
+            ImageCandidate::Cmode(_) => "cmode".to_string(),
+            ImageCandidate::HostManaged { net, .. } => format!("net{net}"),
+            ImageCandidate::Lxc(i, _) => format!("lxc[{i}]"),
+        };
+        rows.push(row(key, "image-derived candidate", String::new()));
+    }
+    if l.parent().is_some() {
+        rows.push(row(
+            "parent".into(),
+            "has snapshots: not carried",
+            String::new(),
+        ));
+    }
+    rows
+}
+
+fn layout_table(l: &Layout) -> String {
+    table(
+        &["KEY", "CLASS", "OPTIONS"],
+        layout_rows(l)
+            .into_iter()
+            .map(|r| r.iter().map(|c| sanitize(c)).collect())
+            .collect(),
+    )
+}
+
+fn layout_json(l: &Layout) -> Value {
+    layout_rows(l)
+        .into_iter()
+        .map(|[key, class, options]| serde_json::json!({"key": key, "class": class, "options": options}))
+        .collect()
 }
 
 fn encode_segment(s: &str) -> String {
@@ -418,6 +566,8 @@ struct GuestRow {
 
 fn render(cmd: &Command, body: Value) -> Result<String, CtlError> {
     Ok(match cmd {
+        // Handled without the server.
+        Command::Layout { .. } => return Err(CtlError::Decode("no response".into())),
         Command::Version => body
             .get("version")
             .and_then(Value::as_str)
@@ -501,6 +651,49 @@ mod tests {
         assert!(!out.contains('\u{9b}') && !out.contains('\u{202e}'));
         let back: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(back, v);
+    }
+
+    #[tokio::test]
+    async fn layout_shows_classes_and_no_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.json");
+        let pending = dir.path().join("pending.json");
+        std::fs::write(
+            &file,
+            r#"{"arch":"amd64","digest":"d","ostype":"debian",
+                "rootfs":"SECRETst:SECRETvol,size=8G","mp0":"/SECRETbind,mp=/SECRETtarget",
+                "env":"A=SECRETenv","description":"SECRETnote","features":"nesting=1",
+                "lxc":[["lxc.init.cwd","/SECRETlxc"]]}"#,
+        )
+        .unwrap();
+        std::fs::write(&pending, r#"[{"key":"digest","value":"d"}]"#).unwrap();
+        let args = |tail: &[&str]| {
+            let mut a = vec!["concordctl", "layout", "--file", file.to_str().unwrap()];
+            a.extend(tail);
+            Cli::parse_from(a)
+        };
+        let p = pending.to_str().unwrap();
+        for tail in [vec![], vec!["--json"]] {
+            let mut out = Vec::new();
+            let mut full = vec!["--pending", p, "--env-visible"];
+            full.extend(tail);
+            run(&args(&full), &mut out).await.unwrap();
+            let text = String::from_utf8(out).unwrap();
+            assert!(!text.contains("SECRET"), "{text}");
+            for shown in ["bind mount", "storage volume", "image-derived", "nesting"] {
+                assert!(text.contains(shown), "{text}");
+            }
+        }
+        let mut out = Vec::new();
+        let e = run(&args(&[]), &mut out).await.unwrap_err().to_string();
+        assert!(out.is_empty());
+        assert!(
+            e.contains("VM.Config.Options") && e.contains("pending"),
+            "{e}"
+        );
+        std::fs::write(&file, r#"{"a": SECRET}"#).unwrap();
+        let e = run(&args(&[]), &mut out).await.unwrap_err().to_string();
+        assert!(e.contains("line 1") && !e.contains("SECRET"), "{e}");
     }
 
     #[test]

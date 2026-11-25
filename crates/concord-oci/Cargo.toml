@@ -1,0 +1,15 @@
+[package]
+name = "concord-oci"
+description = "What of a container must survive replacing its OCI image."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+concord-core = { path = "../concord-core" }
+serde_json.workspace = true
+thiserror.workspace = true
+zeroize = "1"

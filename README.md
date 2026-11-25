@@ -92,6 +92,7 @@ crates/concord-core     shared types; no network
 crates/concord-server   orchestrator: HTTP API, web UI, jobs  → binary `concord`
 crates/concord-config   configuration file and token secrets
 crates/concord-inventory  polls the hosts; one snapshot of the estate
+crates/concord-oci      what of a container must survive replacing its image
 crates/concordctl       command-line client of the API        → binary `concordctl`
 crates/concord-agent    host-side watchdog, no runtime deps   → binary `concord-agent`
 crates/concord-pve      PVE API client: token auth, certificate pinning, mock
