@@ -394,8 +394,9 @@ and put back with the old root volume on rollback, or *bulk data* (a media
 library, say), which Concord leaves alone. A read-only bind needs no copy. Where
 it is not clear which a bind is, it is asked once and remembered, never guessed.
 
-Host paths cannot be read through PVE's API, so copying them is the agent's job.
-Until the agent can do it, a guest with a configuration bind is not auto-updated.
+Host paths cannot be read through PVE's API, so copying them is the job of the
+agent on the host. Nothing is ever installed inside a guest. Until the agent can
+do it, a guest with a configuration bind is not auto-updated.
 Volumes attached to the guest are covered by the backup, not by the swap; one
 that the backup leaves out counts as not protected.
 
