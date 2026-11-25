@@ -314,6 +314,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "concord-oci"
+version = "0.1.1"
+dependencies = [
+ "concord-core",
+ "serde_json",
+ "thiserror",
+ "zeroize",
+]
+
+[[package]]
 name = "concord-pve"
 version = "0.1.1"
 dependencies = [
@@ -379,6 +389,7 @@ dependencies = [
  "concord-config",
  "concord-core",
  "concord-inventory",
+ "concord-oci",
  "concord-pve",
  "concord-server",
  "reqwest",
