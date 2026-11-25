@@ -27,7 +27,7 @@ tracing-subscriber.workspace = true
 getrandom = "0.2"
 # Passphrase digest and constant-time compare, plus wiping secret buffers.
 # All three are already in the tree through concord-pve.
-sha2 = "0.10"
+sha2 = "0.11"
 subtle = "2"
 zeroize = "1"
 # Only to build the base URL HttpPveClient::new takes (reqwest::Url is url::Url);
